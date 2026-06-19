@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="keywords" content="搜猫阅读小说网,最新小说，热门小说，网络小说，小说排行榜，免费全本小说,玄幻小说,奇幻小说,武侠小说,仙侠小说,都市小说,科幻小说,悬疑小说,历史小说，军事小说，言情小说，耽美小说，百合小说，穿越小说，免费阅读,笔趣阁,捞尸人，夜无疆" />
+    <meta name="description" content="搜猫阅读小说网收录了最新热门的网络小说，提供免费阅读体验，涵盖玄幻、奇幻、武侠、仙侠、都市、科幻、悬疑、历史、军事、言情、耽美、百合、穿越等热门题材小说，每日更新小说追据连载排行榜,{年份}最新热门网络小说，无弹窗，无广告，无会员免费阅读，是广大网络小说爱好者必备的小说阅读网，搜猫阅读，让黑夜不再孤独。" />
+    <meta name="web_domain" content="" />
+    <meta name="wap_domain" content="" />
+    <meta name="icp_number" content="" />
+    <meta name="copyright" content="© 2026 搜猫阅读 All Rights Reserved." />
+    <title>搜猫阅读-天亮说晚安</title>
+    <script id="site-config-json" type="application/json">{"site_title":"搜猫阅读","site_subtitle":"聚合搜书平台，搜你想要的书箱","site_logo":"/uploads/1781021012506-f3543eed267c1.png","web_domain":"","wap_domain":"","icp_number":"","analytics_code":"","copyright":"© 2026 搜猫阅读 All Rights Reserved.","home_title":"搜猫阅读-天亮说晚安","home_keywords":"搜猫阅读小说网,最新小说，热门小说，网络小说，小说排行榜，免费全本小说,玄幻小说,奇幻小说,武侠小说,仙侠小说,都市小说,科幻小说,悬疑小说,历史小说，军事小说，言情小说，耽美小说，百合小说，穿越小说，免费阅读,笔趣阁,捞尸人，夜无疆","home_description":"搜猫阅读小说网收录了最新热门的网络小说，提供免费阅读体验，涵盖玄幻、奇幻、武侠、仙侠、都市、科幻、悬疑、历史、军事、言情、耽美、百合、穿越等热门题材小说，每日更新小说追据连载排行榜,{年份}最新热门网络小说，无弹窗，无广告，无会员免费阅读，是广大网络小说爱好者必备的小说阅读网，搜猫阅读，让黑夜不再孤独。","detail_title_template":"{bookName}全文免费阅读_{bookName}最新章节_{siteName}","detail_keywords_template":"{bookName},{author},{bookName}最新章节,{bookName}全文阅读","detail_description_template":"{bookName}是{author}创作的小说，最新章节：{latestChapter}。{intro}","content_cleaner_rules":"{\"removeTags\":[\"script\",\"style\",\"iframe\"],\"removeTexts\":[],\"removePatterns\":[\"第\\s*\\d+\\s*/\\s*\\d+\\s*页\",\"请收藏本站.*?$\",\"最新网址.*?$\",\"本章未完.*?$\"],\"replacements\":[]}","default_book_cover":"/uploads/1781093476669-6d7232abc1697.jpg","auto_dedupe_interval_days":"1"}</script>
+    <script>
+      ;(function () {
+        function setMeta(name, content) {
+          var meta = document.querySelector('meta[name="' + name + '"]')
+          if (!meta) {
+            meta = document.createElement('meta')
+            meta.setAttribute('name', name)
+            document.head.appendChild(meta)
+          }
+          meta.setAttribute('content', content || '')
+        }
+
+        function applyConfigs(configs) {
+          configs = configs || {}
+          document.title = configs.home_title || configs.site_title || ''
+          setMeta('keywords', configs.home_keywords || '')
+          setMeta('description', configs.home_description || '')
+          setMeta('web_domain', configs.web_domain || '')
+          setMeta('wap_domain', configs.wap_domain || '')
+          setMeta('icp_number', configs.icp_number || '')
+          setMeta('copyright', configs.copyright || '')
+        }
+
+        try {
+          var injected = document.getElementById('site-config-json')
+          if (injected && injected.textContent) {
+            applyConfigs(JSON.parse(injected.textContent))
+          }
+        } catch (e) {}
+
+        fetch('/api/config/public/all')
+          .then(function (res) { return res.json() })
+          .then(function (res) {
+            var configs = {}
+            ;(res.data || []).forEach(function (item) {
+              configs[item.config_key] = item.config_value || ''
+            })
+            applyConfigs(configs)
+          })
+          .catch(function () {})
+      })()
+    </script>
+    <script type="module" crossorigin src="/assets/index-DeYoXcLJ.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-vue-nhTs1dg3.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-pinia-DQ1shQUZ.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-Br-RgDAn.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-element-icons-B7JkwA8X.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-element-plus-BIwpHBDh.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-vue-router-BBw9oyaU.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-axios-BjtuyMK1.js">
+    <link rel="stylesheet" crossorigin href="/assets/vendor-element-plus-BcdJRL_0.css">
+    <link rel="stylesheet" crossorigin href="/assets/index-DjXDc8S4.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

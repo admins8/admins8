@@ -1,0 +1,74 @@
+# docker-compose.yml — 客户在交付包根目录执行 `docker compose up -d`
+# 注意：license/license.lic 由客户挂载，Compose 会把它映射进容器
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:5.7
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpwd}
+      MYSQL_DATABASE: ${DB_NAME:-soumal}
+      MYSQL_USER: ${DB_USER:-soumal}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-soumal}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    image: legado-home-server:latest
+    restart: unless-stopped
+    depends_on:
+      - mysql
+      - redis
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-soumal}
+      DB_PASSWORD: ${DB_PASSWORD:-soumal}
+      DB_NAME: ${DB_NAME:-soumal}
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_IN_PRODUCTION}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-CHANGE_ME}
+      REDIS_ENABLED: "true"
+      REDIS_URL: redis://redis:6379
+      DB_CONNECTION_LIMIT: 20
+      SEARCH_SOURCE_CONCURRENCY: 10
+      SEARCH_GLOBAL_CONCURRENCY: 10
+      CORS_ORIGIN: ${CORS_ORIGIN:-}
+    volumes:
+      # 关键：把客户拿到的 license.lic 挂进去；如果没挂，容器会启动失败
+      - ../server/license:/app/license:ro
+      - server-uploads:/app/data/uploads
+    ports:
+      - "3001:3001"
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+    image: legado-home-web:latest
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+
+volumes:
+  mysql-data:
+  server-uploads:

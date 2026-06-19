@@ -1,0 +1,18 @@
+===== 登录端到端测试报告 =====
+
+--- 测试 1：正确凭据 admin / admin123 ---
+截图: d:\legado-home\login_success.png
+当前URL: http://localhost:5173/login
+页面标题: 登录
+可见文本(前500字): 首页 排行榜 我的书架 登录 注册 登录您的账户 用户名 密码 登 录 还没有账户？ 立即注册 © 2026 搜猫阅读 All Rights Reserved.
+API 交互: [(200, 'http://localhost:5173/api/config/public/all'), (304, 'http://localhost:5173/src/api/index.ts'), (200, 'http://localhost:5173/api/config/public/all'), (200, 'http://localhost:5173/api/config/public/all')]
+Console 日志: ['[debug] [vite] connecting...', '[debug] [vite] connected.']
+
+--- 测试 2：错误凭据 admin / wrongpass ---
+截图: d:\legado-home\login_error.png
+当前URL: http://localhost:5173/login
+页面标题: 登录
+可见文本(前500字): 首页 排行榜 我的书架 登录 注册 登录您的账户 用户名 密码 登 录 还没有账户？ 立即注册 © 2026 搜猫阅读 All Rights Reserved.
+捕获到的错误提示文本: []
+API 交互: [(200, 'http://localhost:5173/api/config/public/all'), (304, 'http://localhost:5173/src/api/index.ts'), (200, 'http://localhost:5173/api/config/public/all'), (200, 'http://localhost:5173/api/config/public/all')]
+Console 日志: ['[debug] [vite] connecting...', '[debug] [vite] connected.']

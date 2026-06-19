@@ -1,0 +1,10 @@
+﻿[
+    "app.js",
+    "config/migrations.js",
+    "migrations/026_baidu_push_plugin.js",
+    "services/seoService.js",
+    "services/baiduPushPlugin.js",
+    "controllers/collectorPluginController.js",
+    "routes/admin.js",
+    "version.txt"
+]

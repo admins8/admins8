@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+web2/dist/
+server/dist/
+server/data/
+
+# Environment files (keep .env.example, ignore .env)
+server/.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temp files
+*.tmp
+*.bak
+web2.old.bak/
+
+# Uploads
+server/data/uploads/
+
+# Android build
+mobile/android/app/build/
+mobile/android/.gradle/
+mobile/android/build/
+
+# TRAE w

@@ -1,0 +1,109 @@
+name: legado-home-dev
+
+services:
+  mysql:
+    image: mysql:5.7
+    container_name: legado-home-dev-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpwd}
+      MYSQL_DATABASE: ${DB_NAME:-soumal}
+      MYSQL_USER: ${DB_USER:-soumal}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-soumal}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --sql-mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
+    ports:
+      - "${MYSQL_PORT:-3307}:3306"
+    volumes:
+      - dev-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    container_name: legado-home-dev-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+    volumes:
+      - dev-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  server:
+    build:
+      context: .
+      dockerfile: docker/dev/Dockerfile.server
+    container_name: legado-home-dev-server
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-soumal}
+      DB_PASSWORD: ${DB_PASSWORD:-soumal}
+      DB_NAME: ${DB_NAME:-soumal}
+      DB_CONNECTION_LIMIT: 20
+      JWT_SECRET: ${JWT_SECRET:-legado-web-secret-key-change-in-development}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@legado.local}
+      REDIS_ENABLED: "true"
+      REDIS_URL: redis://redis:6379
+      REDIS_CONNECT_TIMEOUT: 1000
+      SEARCH_CACHE_TTL_SECONDS: 600
+      SEARCH_SOURCE_CONCURRENCY: 10
+      SEARCH_GLOBAL_CONCURRENCY: 10
+      ENABLE_SOURCE_JS: ${ENABLE_SOURCE_JS:-false}
+      UPLOAD_DIR: /app/data/uploads
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      CHOKIDAR_USEPOLLING: "true"
+      TZ: Asia/Shanghai
+    volumes:
+      - ./server:/app
+      - dev-server-node-modules:/app/node_modules
+      - ./server/data:/app/data
+      - ./server/license:/app/license:ro
+    ports:
+      - "${SERVER_PORT:-3001}:3001"
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/dev/Dockerfile.web
+    container_name: legado-home-dev-web
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      VITE_API_PROXY_TARGET: http://server:3001
+      SITE_CONFIG_API_BASE: http://server:3001
+      CHOKIDAR_USEPOLLING: "true"
+      TZ: Asia/Shanghai
+    volumes:
+      - ./web:/app
+      - dev-web-node-modules:/app/node_modules
+    ports:
+      - "${WEB_PORT:-5173}:5173"
+
+volumes:
+  dev-mysql-data:
+  dev-redis-data:
+  dev-server-node-modules:
+  dev-web-node-modules:

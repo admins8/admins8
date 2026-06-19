@@ -1,0 +1,22 @@
+import { Request, Response } from 'express';
+export declare function getPublicChannelHandler(req: Request, res: Response): Promise<void>;
+export declare function getAdminChannelHandler(req: Request, res: Response): Promise<void>;
+export declare function updateChannelHandler(req: Request, res: Response): Promise<void>;
+export declare function seedChannelHandler(req: Request, res: Response): Promise<void>;
+export declare function createSectionHandler(req: Request, res: Response): Promise<void>;
+export declare function updateSectionHandler(req: Request, res: Response): Promise<void>;
+export declare function deleteSectionHandler(req: Request, res: Response): Promise<void>;
+export declare function createItemHandler(req: Request, res: Response): Promise<void>;
+export declare function updateItemHandler(req: Request, res: Response): Promise<void>;
+export declare function deleteItemHandler(req: Request, res: Response): Promise<void>;
+export declare function getPublicContentPageHandler(req: Request, res: Response): Promise<void>;
+export declare function listContentPagesHandler(_req: Request, res: Response): Promise<void>;
+export declare function getAdminContentPageHandler(req: Request, res: Response): Promise<void>;
+export declare function updateContentPageHandler(req: Request, res: Response): Promise<void>;
+export declare function getPublicFriendlyLinksHandler(_req: Request, res: Response): Promise<void>;
+export declare function listFriendlyLinksHandler(_req: Request, res: Response): Promise<void>;
+export declare function updateFriendlyLinkSettingsHandler(req: Request, res: Response): Promise<void>;
+export declare function createFriendlyLinkHandler(req: Request, res: Response): Promise<void>;
+export declare function updateFriendlyLinkHandler(req: Request, res: Response): Promise<void>;
+export declare function deleteFriendlyLinkHandler(req: Request, res: Response): Promise<void>;
+//# sourceMappingURL=pageController.d.ts.map

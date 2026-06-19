@@ -1,0 +1,8 @@
+# 前端 Nginx Dockerfile
+# 把混淆后的 web/dist 直接交给 Nginx，并通过 /api 反代到后端容器
+FROM nginx:1.27-alpine
+
+COPY web/dist /usr/share/nginx/html
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80

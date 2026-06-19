@@ -1,0 +1,14 @@
+{
+  "payload": {
+    "licenseId": "LIC-2026-0001",
+    "customerId": "customer-soumal",
+    "customerName": "搜麦阅读",
+    "domains": [
+      "soumal.com",
+      "*.soumal.com"
+    ],
+    "issuedAt": "2026-06-11T02:39:55.081Z",
+    "note": "首批授权"
+  },
+  "signature": "J5pgqLDwAzcQzdgWbGNBNOLunIuypwN4Vw9lY4dyS9e5K+KUuOQj813hd22Gkww0BfhNiIkL1wMQy9uKRyt0geZ92Rxy4rTD4ZgbuM2ZNV9SuWuRVocWS0rVb5IwBdof9S2miYr5I+zLtBpdLtmp3yDXWtQhXIRkgTeAs6NYY38r6Rte0AiQMV4gFr/d85TSaKBqzEoI5l06hMOHn1nrCUmBm3PgqjNzLr8RYryb+rgGJiWGRC4x5/PnHz/m1jlwxMqCaDJaHDueSNLCOjBXRZMQ8/wU49VuqeMiXLwhD1U/IKTIlBEm3tWekjOz0N0epZveEF5xDwgwdw74cBFzaw=="
+}

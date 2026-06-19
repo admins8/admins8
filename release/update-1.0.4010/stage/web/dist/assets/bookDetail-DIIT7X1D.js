@@ -1,0 +1,1 @@
+const r="legado:book-detail:";function n(e){return r+encodeURIComponent(e)}function a(e){e!=null&&e.bookUrl&&sessionStorage.setItem(n(e.bookUrl),JSON.stringify(e))}function s(e){if(!e)return null;const t=sessionStorage.getItem(n(e));if(!t)return null;try{return JSON.parse(t)}catch{return null}}export{s as l,a as s};

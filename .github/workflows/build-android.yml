@@ -1,0 +1,114 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: '构建任务ID（由服务器生成）'
+        required: true
+        type: number
+      version_name:
+        description: '版本号'
+        required: true
+        type: string
+      version_code:
+        description: '版本代码'
+        required: true
+        type: number
+      callback_url:
+        description: '构建完成回调URL'
+        required: true
+        type: string
+      callback_secret:
+        description: '回调密钥'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            web2/package-lock.json
+            mobile/package-lock.json
+
+      - name: Setup Java (for Android build)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+          cache-dependency-path: |
+            mobile/android/.gradle
+            mobile/android/app/build.gradle
+
+      - name: Install web2 dependencies
+        run: |
+          cd web2
+          npm ci
+
+      - name: Build web2 frontend
+        run: |
+          cd web2
+          npm run build
+
+      - name: Install mobile dependencies
+        run: |
+          cd mobile
+          npm ci
+
+      - name: Sync Capacitor
+        run: |
+          cd mobile
+          npx cap sync android
+
+      - name: Build Android APK
+        run: |
+          cd mobile/android
+          chmod +x gradlew
+          ./gradlew assembleRelease
+        env:
+          JAVA_HOME: ${{ steps.setup-java.outputs.java-home }}
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ github.event.inputs.task_id }}
+          path: mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk
+          retention-days: 7
+
+      - name: Notify server (success)
+        if: success()
+        run: |
+          APK_SIZE=$(stat -c%s mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk 2>/dev/null || echo "0")
+          curl -X POST "${{ github.event.inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Build-Secret: ${{ github.event.inputs.callback_secret }}" \
+            -d "{
+              \"task_id\": ${{ github.event.inputs.task_id }},
+              \"status\": \"success\",
+              \"run_id\": \"${{ github.run_id }}\",
+              \"apk_size\": ${APK_SIZE}
+            }"
+
+      - name: Notify server (failure)
+        if: failure()
+        run: |
+          curl -X POST "${{ github.event.inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Build-Secret: ${{ github.event.inputs.callback_secret }}" \
+            -d "{
+              \"task_id\": ${{ github.event.inputs.task_id }},
+              \"status\": \"failed\",
+              \"run_id\": \"${{ github.run_id }}\",
+              \"error\": \"Build failed in GitHub Actions\"
+            }"

@@ -1,0 +1,14 @@
+{
+  "payload": {
+    "licenseId": "LIC-2026-0001",
+    "customerId": "customer-soumal",
+    "customerName": "搜猫阅读",
+    "domains": [
+      "soumal.com",
+      "*.soumal.com"
+    ],
+    "issuedAt": "2026-06-11T03:02:58.136Z",
+    "note": ""
+  },
+  "signature": "PT0KchleQ2cmUMAd04XfTa6bI3pJ8Q6ZHYo/by5VwZBb3OawmKEfA1jxltAHJHqayO8cGdhXzm5oyswU61QFJ693bZ1SdKqqvm4+4M0yPST0IQPvA8jboTLI1LLcG6Ll/EBDKBdMpEhc1i+iVTLZYbahQqOm4Bv89OezK0tPU9LK/s9pyMhpWXx+k1IHJ735bmTE2J0K6PKFx6rf2gF63gewxhWpV3O8W8I7YdzC6vnbftugHc3df3THT7fOrjQ52EsQrMSZ/4QOJPmHWvTSYh47Esy9wz6H3HOynjlkDvrWu3NyUtwYgxOuuQgPDrdoKtHjnf0WqNrvr/PFQkndKg=="
+}

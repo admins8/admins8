@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="keywords" content="小说搜索,网络小说,电子书,阅读" />
+    <meta name="description" content="搜书网提供小说搜索、书架管理和在线阅读服务。" />
+    <meta name="web_domain" content="" />
+    <meta name="wap_domain" content="" />
+    <meta name="icp_number" content="" />
+    <meta name="copyright" content="© 2026 搜猫阅读  All Rights Reserved." />
+    <title>搜猫阅读</title>
+    <script id="site-config-json" type="application/json">{"email_enabled":"false","email_from_name":"","email_from_address":"","smtp_host":"","smtp_port":"465","smtp_secure":"true","smtp_username":"","smtp_password":"","pop3_host":"","pop3_port":"995","pop3_secure":"true","imap_host":"","imap_port":"993","imap_secure":"true","site_title":"搜猫阅读","site_subtitle":"搜书网，图片格式，由网站管理员后台上传","site_logo":"/uploads/1781266727546-632311c06124f.png","web_domain":"","wap_domain":"","icp_number":"","analytics_code":"","copyright":"© 2026 搜猫阅读  All Rights Reserved.","home_title":"搜猫阅读","home_keywords":"小说搜索,网络小说,电子书,阅读","home_description":"搜书网提供小说搜索、书架管理和在线阅读服务。","detail_title_template":"{bookName}全文免费阅读_{bookName}最新章节_{siteName}","detail_keywords_template":"{bookName},{author},{bookName}最新章节,{bookName}全文阅读","detail_description_template":"{bookName}是{author}创作的小说，最新章节：{latestChapter}。{intro}","content_cleaner_rules":"{\"removeTags\":[\"script\",\"style\",\"iframe\"],\"removeTexts\":[],\"removePatterns\":[\"第\\\\s*\\\\d+\\\\s*/\\\\s*\\\\d+\\\\s*页\",\"请收藏本站.*?$\",\"最新网址.*?$\",\"本章未完.*?$\",\"^\\\\s*Please\\\\s+(?:visit|bookmark|remember)\\\\b.*?(?:www\\\\.|https?://|latest\\\\s+chapter|chapter|site|website).*?$\",\"^\\\\s*If\\\\s+you\\\\s+find\\\\s+any\\\\s+errors\\\\b.*?$\",\"^\\\\s*(?:This\\\\s+chapter\\\\s+is\\\\s+updated|Read\\\\s+the\\\\s+latest\\\\s+chapter|Download\\\\s+.*?app)\\\\b.*?$\",\"^\\\\s*(?:www\\\\.|https?://)[^\\\\s\\\\u4e00-\\\\u9fa5]+\\\\s*$\",\"^\\\\s*window\\\\.[A-Za-z_$][\\\\w$]*\\\\s*=\\\\s*['\\\"][A-Za-z0-9+/=\\\\s]{40,}['\\\"];?\\\\s*$\"],\"replacements\":[]}","guest_search_enabled":"1","guest_read_chapter_limit":"5","reader_title_template":"{chapterTitle}_{bookName}全文阅读_{siteName}","reader_keywords_template":"{bookName},{chapterTitle},{author},免费阅读,{年份}","reader_description_template":"正在阅读{bookName}的{chapterTitle}，作者：{author}。","search_title_template":"{keyword}搜索结果_{siteName}","search_keywords_template":"{keyword},小说搜索,免费小说,{年份}","search_description_template":"在{siteName}搜索{keyword}，查看相关小说和可用书源。","ranking_title_template":"小说排行榜_{siteName}","ranking_keywords_template":"小说排行榜,热门小说,完本小说,免费小说,{年份}","ranking_description_template":"{siteName}提供热门小说排行榜、分类榜单和推荐书单。","auto_dedupe_interval_days":"1","default_book_cover":"","search_verify_toc":"false","search_source_concurrency":"20","search_source_timeout_ms":"5000","search_toc_timeout_ms":"3000","source_switch_concurrency":"20","source_switch_timeout_ms":"5000","source_switch_toc_timeout_ms":"3000","alternate_source_cache_ttl_seconds":"3600","friendly_links_enabled":"true","source_validate_schedule_enabled":"false","source_validate_schedule_day":"1","source_validate_schedule_hour":"3","source_validate_schedule_minute":"0","source_validate_schedule_keyword":"诡秘之主","source_validate_schedule_timeout_ms":"15000","source_validate_schedule_concurrency":"5","source_validate_schedule_scope":"enabled","source_validate_schedule_failure_action":"none","source_validate_last_run_key":"","source_validate_last_run_at":"","source_validate_last_result":""}</script>
+    <script>
+      ;(function () {
+        function setMeta(name, content) {
+          var meta = document.querySelector('meta[name="' + name + '"]')
+          if (!meta) {
+            meta = document.createElement('meta')
+            meta.setAttribute('name', name)
+            document.head.appendChild(meta)
+          }
+          meta.setAttribute('content', content || '')
+        }
+
+        function renderTemplate(template, configs) {
+          var siteName = configs.site_title || '搜书网'
+          var year = String(new Date().getFullYear())
+          return String(template || '').replace(/\{([^{}]+)\}/g, function (_, rawKey) {
+            var key = rawKey === '网站名' ? 'siteName' : rawKey
+            if (key === 'siteName') return siteName
+            if (key === '年份' || key === 'year') return year
+            return ''
+          }).trim()
+        }
+
+        function applyConfigs(configs) {
+          configs = configs || {}
+          var title = renderTemplate(configs.home_title || configs.site_title || '', configs)
+          document.title = title || configs.site_title || ''
+          setMeta('keywords', renderTemplate(configs.home_keywords || '', configs))
+          setMeta('description', renderTemplate(configs.home_description || '', configs))
+          setMeta('web_domain', configs.web_domain || '')
+          setMeta('wap_domain', configs.wap_domain || '')
+          setMeta('icp_number', configs.icp_number || '')
+          setMeta('copyright', configs.copyright || '')
+        }
+
+        try {
+          var injected = document.getElementById('site-config-json')
+          if (injected && injected.textContent) {
+            applyConfigs(JSON.parse(injected.textContent))
+          }
+        } catch (e) {}
+
+        fetch('/api/config/public/all')
+          .then(function (res) { return res.json() })
+          .then(function (res) {
+            var configs = {}
+            ;(res.data || []).forEach(function (item) {
+              configs[item.config_key] = item.config_value || ''
+            })
+            applyConfigs(configs)
+          })
+          .catch(function () {})
+      })()
+    </script>
+    <script type="module" crossorigin src="/assets/index-uTgpvsRw.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-vue-32O_5nTH.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-pinia-B1GWzY7h.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-Br-RgDAn.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-element-icons-DeBnpG1v.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-element-plus-C9mSYllq.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-vue-router-DINgC4JT.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-axios-BjtuyMK1.js">
+    <link rel="stylesheet" crossorigin href="/assets/vendor-element-plus-DzGSOvyp.css">
+    <link rel="stylesheet" crossorigin href="/assets/index-Bo6v9Gw4.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

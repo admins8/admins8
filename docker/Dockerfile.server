@@ -1,0 +1,25 @@
+# 后端 Dockerfile
+# 假设构建上下文是交付包根目录（release/<customer>/），目录里已经有 server/dist、package.json 和 package-lock.json
+FROM node:20-alpine AS runtime
+
+WORKDIR /app
+
+# 先安装 Linux 容器内的生产依赖，避免把开发机 node_modules 打入镜像
+COPY server/package.json ./package.json
+COPY server/package-lock.json ./package-lock.json
+RUN npm ci --omit=dev --no-audit --no-fund \
+  && npm rebuild isolated-vm || true
+
+# 拷贝运行所需文件
+COPY server/dist ./dist
+
+# license 目录作为 volume 挂载点（运行时由客户挂载真正的 license.lic）
+RUN mkdir -p /app/license /app/data/uploads
+COPY server/license/public.pem ./license/public.pem
+
+ENV NODE_ENV=production
+ENV PORT=3001
+EXPOSE 3001
+
+# 注意：客户必须用 -v 挂载 license 目录，否则启动会因缺少 license.lic 退出
+CMD ["node", "dist/app.js"]

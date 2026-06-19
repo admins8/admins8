@@ -1,0 +1,11 @@
+﻿[
+    "app.js",
+    "routes/siteConfig.js",
+    "controllers/siteConfigController.js",
+    "controllers/collectorPluginController.js",
+    "services/publicSiteConfig.js",
+    "services/seoHtmlService.js",
+    "services/seoService.js",
+    "services/baiduPushPlugin.js",
+    "version.txt"
+]

@@ -1,0 +1,1 @@
+{"version":3,"file":"httpAgent.d.ts","sourceRoot":"","sources":["../../src/services/httpAgent.ts"],"names":[],"mappings":"AAAA,OAAO,IAAI,MAAM,MAAM,CAAC;AACxB,OAAO,KAAK,MAAM,OAAO,CAAC;AAyF1B,4BAA4B;AAC5B,wBAAgB,cAAc,CAAC,GAAG,EAAE,MAAM,GAAG,IAAI,CAAC,KAAK,GAAG,KAAK,CAAC,KAAK,CAEpE;AAED,gCAAgC;AAChC,eAAO,MAAM,eAAe,YAAY,CAAC;AACzC,eAAO,MAAM,gBAAgB,aAAa,CAAC"}

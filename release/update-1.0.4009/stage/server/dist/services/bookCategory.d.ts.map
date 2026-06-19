@@ -1,0 +1,1 @@
+{"version":3,"file":"bookCategory.d.ts","sourceRoot":"","sources":["../../src/services/bookCategory.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,uBAAuB;IACtC,IAAI,EAAE,MAAM,CAAC;IACb,SAAS,EAAE,MAAM,CAAC;IAClB,QAAQ,EAAE,OAAO,CAAC;CACnB;AAED,wBAAgB,sBAAsB,CAAC,KAAK,EAAE,GAAG,GAAG,uBAAuB,CAe1E"}

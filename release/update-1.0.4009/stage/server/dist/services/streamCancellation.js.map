@@ -1,0 +1,1 @@
+{"version":3,"file":"streamCancellation.js","sourceRoot":"","sources":["../../src/services/streamCancellation.ts"],"names":[],"mappings":";;AAMA,sEAaC;AAbD,SAAgB,6BAA6B;IAC3C,IAAI,SAAS,GAAG,KAAK,CAAC;IACtB,OAAO;QACL,MAAM;YACJ,SAAS,GAAG,IAAI,CAAC;QACnB,CAAC;QACD,WAAW;YACT,OAAO,SAAS,CAAC;QACnB,CAAC;QACD,OAAO;YACL,OAAO,CAAC,SAAS,CAAC;QACpB,CAAC;KACF,CAAC;AACJ,CAAC"}

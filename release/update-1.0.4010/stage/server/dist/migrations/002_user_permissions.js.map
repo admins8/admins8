@@ -1,0 +1,1 @@
+{"version":3,"file":"002_user_permissions.js","sourceRoot":"","sources":["../../src/migrations/002_user_permissions.ts"],"names":[],"mappings":";;;AAIA,gBAYC;AAdY,QAAA,IAAI,GAAG,sBAAsB,CAAC;AAEpC,KAAK,UAAU,EAAE,CAAC,EAAc;IACrC,MAAM,EAAE,CAAC,KAAK,CAAC;;;;;;;;;;GAUd,CAAC,CAAC;AACL,CAAC"}

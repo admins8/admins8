@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>女生频道与后台页面管理布局草图</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: #f5f6fb;
+      color: #25324a;
+    }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 28px; }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    .desc { margin: 0 0 24px; color: #6b7280; }
+    .grid { display: grid; grid-template-columns: 1.18fr .82fr; gap: 24px; align-items: start; }
+    .panel {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 18px;
+      box-shadow: 0 14px 36px rgba(28, 43, 80, .08);
+      overflow: hidden;
+    }
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 18px 22px;
+      border-bottom: 1px solid #edf0f5;
+      background: linear-gradient(135deg, #fff6fb, #f7fbff);
+    }
+    .panel-head h2 { margin: 0; font-size: 18px; }
+    .tag { color: #d9468f; background: #ffe5f1; border-radius: 999px; padding: 5px 10px; font-size: 12px; }
+    .site-top {
+      height: 58px;
+      background: #ffffff;
+      border-bottom: 1px solid #f0f0f0;
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      gap: 22px;
+      color: #657085;
+      font-size: 14px;
+    }
+    .logo { font-size: 22px; font-weight: 800; color: #e64291; margin-right: 10px; }
+    .active { color: #e64291; font-weight: 700; }
+    .front-body { padding: 20px 24px 26px; background: #fff; }
+    .hero { display: grid; grid-template-columns: 2.1fr .9fr; gap: 18px; }
+    .slider {
+      height: 246px;
+      border-radius: 16px;
+      background: linear-gradient(135deg, #ff8db9, #ffcadb 58%, #fff1f7);
+      position: relative;
+      overflow: hidden;
+      padding: 28px;
+      color: #fff;
+    }
+    .slider .title { font-size: 34px; font-weight: 900; margin-bottom: 12px; text-shadow: 0 2px 8px rgba(0,0,0,.12); }
+    .slider .sub { width: 52%; line-height: 1.7; }
+    .dots { position: absolute; left: 28px; bottom: 22px; display: flex; gap: 7px; }
+    .dots span { width: 22px; height: 6px; border-radius: 99px; background: rgba(255,255,255,.55); }
+    .dots span:first-child { background: #fff; }
+    .side-rotate { display: grid; gap: 12px; }
+    .rotate-card {
+      height: 117px;
+      border-radius: 14px;
+      padding: 18px;
+      background: linear-gradient(135deg, #fff0f5, #fff);
+      border: 1px solid #ffe1ed;
+      color: #be2e74;
+      font-weight: 800;
+      position: relative;
+    }
+    .rotate-card small { display: block; margin-top: 8px; color: #8b5b70; font-weight: 500; }
+    .section { margin-top: 24px; }
+    .section-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+      font-weight: 900;
+      font-size: 18px;
+    }
+    .more { color: #e64291; font-size: 13px; font-weight: 600; }
+    .books { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
+    .book {
+      border: 1px solid #f1f1f4;
+      border-radius: 12px;
+      padding: 10px;
+      background: #fff;
+    }
+    .cover { height: 128px; border-radius: 10px; background: linear-gradient(145deg, #ffd6e5, #f498bd); margin-bottom: 9px; }
+    .book b { display: block; font-size: 14px; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .book span { color: #8791a3; font-size: 12px; }
+    .category-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .cat {
+      border-radius: 14px;
+      padding: 16px;
+      min-height: 86px;
+      background: #fff7fb;
+      border: 1px solid #ffe2ef;
+      color: #c73780;
+      font-weight: 800;
+    }
+    .cat small { display: block; margin-top: 9px; color: #8b7280; font-weight: 400; }
+    .admin-layout {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      min-height: 720px;
+    }
+    .side {
+      background: #182235;
+      color: #d7deef;
+      padding: 18px 12px;
+      font-size: 14px;
+    }
+    .side h3 { margin: 0 0 18px; font-size: 17px; color: #fff; }
+    .menu-title { margin: 14px 0 8px; color: #8ea0bf; }
+    .menu-item { padding: 10px 12px; border-radius: 9px; margin-bottom: 5px; }
+    .menu-item.on { background: #2f6df6; color: #fff; }
+    .admin-main { padding: 20px; background: #f7f9fc; }
+    .form-card { background: #fff; border-radius: 14px; border: 1px solid #e8edf5; margin-bottom: 16px; overflow: hidden; }
+    .form-title { padding: 15px 18px; border-bottom: 1px solid #edf0f5; font-weight: 800; display: flex; justify-content: space-between; }
+    .form-content { padding: 18px; }
+    .mini-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .mini-table th, .mini-table td { border-bottom: 1px solid #eef1f6; padding: 11px 8px; text-align: left; }
+    .mini-table th { color: #637083; font-weight: 600; background: #fafbfe; }
+    .thumb { width: 72px; height: 40px; border-radius: 8px; background: linear-gradient(135deg, #ff9ac2, #ffdbe8); }
+    .btn { display: inline-block; padding: 7px 11px; border-radius: 7px; background: #2f6df6; color: #fff; font-size: 12px; margin-right: 6px; }
+    .btn.gray { background: #eef2f7; color: #405069; }
+    .note { margin-top: 16px; padding: 14px 16px; background: #fff8e5; border: 1px solid #ffe0a3; color: #77531e; border-radius: 12px; font-size: 14px; line-height: 1.7; }
+    @media (max-width: 1020px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>女生频道 + 后台页面管理布局草图</h1>
+    <p class="desc">这是低保真草图，只用于确认布局和功能范围，不代表最终视觉细节。</p>
+
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>前台：女生频道页面</h2>
+          <span class="tag">用户看到的页面</span>
+        </div>
+        <div class="site-top">
+          <span class="logo">搜猫阅读</span>
+          <span>首页</span>
+          <span class="active">女生频道</span>
+          <span>排行榜</span>
+          <span>书架</span>
+          <span style="margin-left:auto">搜索小说 / 作者</span>
+        </div>
+        <div class="front-body">
+          <div class="hero">
+            <div class="slider">
+              <div class="title">女生精选频道</div>
+              <div class="sub">幻灯片位：后台上传大图、标题、副标题和跳转链接，可排序、启用/禁用。</div>
+              <div class="dots"><span></span><span></span><span></span></div>
+            </div>
+            <div class="side-rotate">
+              <div class="rotate-card">旋转图位 A<small>后台配置图片、链接、排序</small></div>
+              <div class="rotate-card">旋转图位 B<small>适合活动/专题/新书推广</small></div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">分类入口 <span class="more">后台可管理分类名称/排序/链接</span></div>
+            <div class="category-row">
+              <div class="cat">古言宅斗<small>链接到分类或搜索结果</small></div>
+              <div class="cat">现言甜宠<small>支持自定义跳转</small></div>
+              <div class="cat">青春校园<small>支持启用/禁用</small></div>
+              <div class="cat">幻想言情<small>可调整排序</small></div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">热门推荐 <span class="more">更多 ></span></div>
+            <div class="books">
+              <div class="book"><div class="cover"></div><b>掌心宠</b><span>作者名 · 连载</span></div>
+              <div class="book"><div class="cover"></div><b>入夜心动</b><span>作者名 · 完结</span></div>
+              <div class="book"><div class="cover"></div><b>春日来信</b><span>作者名 · 连载</span></div>
+              <div class="book"><div class="cover"></div><b>锦绣长安</b><span>作者名 · 完结</span></div>
+              <div class="book"><div class="cover"></div><b>月光失约</b><span>作者名 · 连载</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>后台：内容管理 → 页面管理 → 女生频道</h2>
+          <span class="tag">管理员配置页面</span>
+        </div>
+        <div class="admin-layout">
+          <aside class="side">
+            <h3>管理后台</h3>
+            <div class="menu-title">内容管理</div>
+            <div class="menu-item">基础数据</div>
+            <div class="menu-item">广告管理</div>
+            <div class="menu-item on">页面管理</div>
+            <div style="padding-left:14px;">
+              <div class="menu-item on">女生频道</div>
+            </div>
+            <div class="menu-item">净化管理</div>
+            <div class="menu-item">阅读设置</div>
+          </aside>
+          <main class="admin-main">
+            <div class="form-card">
+              <div class="form-title">页面基础设置 <span class="btn">保存</span></div>
+              <div class="form-content">
+                页面标题、页面简介、是否启用、SEO 标题/关键词/描述、页面路径：/female
+              </div>
+            </div>
+            <div class="form-card">
+              <div class="form-title">幻灯片管理 <span><span class="btn">添加幻灯片</span><span class="btn gray">排序</span></span></div>
+              <div class="form-content">
+                <table class="mini-table">
+                  <thead><tr><th>图片</th><th>标题</th><th>链接</th><th>状态</th><th>操作</th></tr></thead>
+                  <tbody>
+                    <tr><td><div class="thumb"></div></td><td>女生精选</td><td>/book-detail?id=...</td><td>启用</td><td>编辑 删除</td></tr>
+                    <tr><td><div class="thumb"></div></td><td>新书推荐</td><td>/ranking?category=女生</td><td>启用</td><td>编辑 删除</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="form-card">
+              <div class="form-title">旋转图管理 <span class="btn">添加旋转图</span></div>
+              <div class="form-content">配置右侧/活动推荐位图片、标题、链接、排序、启用状态。</div>
+            </div>
+            <div class="form-card">
+              <div class="form-title">分类入口管理 <span class="btn">添加分类</span></div>
+              <div class="form-content">配置分类名称、说明、跳转链接、排序、启用状态。</div>
+            </div>
+          </main>
+        </div>
+      </section>
+    </div>
+
+    <div class="note">
+      建议先按这个版本做：女生频道只有一个页面；后台只管理「幻灯片、旋转图、分类入口、页面基础信息」四类内容。
+      后续如果还要加男生频道、出版频道、漫画频道，可以复用同一套「页面管理」数据结构。
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="keywords" content="" />
+    <meta name="description" content="" />
+    <meta name="web_domain" content="" />
+    <meta name="wap_domain" content="" />
+    <meta name="icp_number" content="" />
+    <meta name="copyright" content="" />
+    <title></title>
+    <script id="site-config-json" type="application/json">{}</script>
+    <script>
+      ;(function () {
+        function setMeta(name, content) {
+          var meta = document.querySelector('meta[name="' + name + '"]')
+          if (!meta) {
+            meta = document.createElement('meta')
+            meta.setAttribute('name', name)
+            document.head.appendChild(meta)
+          }
+          meta.setAttribute('content', content || '')
+        }
+
+        function renderTemplate(template, configs) {
+          var siteName = configs.site_title || '搜书网'
+          var year = String(new Date().getFullYear())
+          return String(template || '').replace(/\{([^{}]+)\}/g, function (_, rawKey) {
+            var key = rawKey === '网站名' ? 'siteName' : rawKey
+            if (key === 'siteName') return siteName
+            if (key === '年份' || key === 'year') return year
+            return ''
+          }).trim()
+        }
+
+        function applyConfigs(configs) {
+          configs = configs || {}
+          var title = renderTemplate(configs.home_title || configs.site_title || '', configs)
+          document.title = title || configs.site_title || ''
+          setMeta('keywords', renderTemplate(configs.home_keywords || '', configs))
+          setMeta('description', renderTemplate(configs.home_description || '', configs))
+          setMeta('web_domain', configs.web_domain || '')
+          setMeta('wap_domain', configs.wap_domain || '')
+          setMeta('icp_number', configs.icp_number || '')
+          setMeta('copyright', configs.copyright || '')
+        }
+
+        try {
+          var injected = document.getElementById('site-config-json')
+          if (injected && injected.textContent) {
+            applyConfigs(JSON.parse(injected.textContent))
+          }
+        } catch (e) {}
+
+        fetch('/api/config/public/all')
+          .then(function (res) { return res.json() })
+          .then(function (res) {
+            var configs = {}
+            ;(res.data || []).forEach(function (item) {
+              configs[item.config_key] = item.config_value || ''
+            })
+            applyConfigs(configs)
+          })
+          .catch(function () {})
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
