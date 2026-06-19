@@ -154,7 +154,7 @@ export async function triggerBuild(req: Request, res: Response): Promise<void> {
         await appBuildService.updateBuildTask(taskId, {
           status: 'failed',
           build_log: result.error,
-          completed_at: new Date().toISOString(),
+          completed_at: new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19),
         });
         res.json({ code: 0, data: { task_id: taskId, message: result.error } });
       } else {

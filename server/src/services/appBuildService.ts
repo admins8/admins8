@@ -4,6 +4,10 @@ import https from 'https';
 import http from 'http';
 import { query } from '../config/database';
 
+function toMySQLDateTime(date: Date = new Date()): string {
+  return date.toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+}
+
 export interface BuildTask {
   id: number;
   platform: 'android' | 'harmony';
@@ -156,7 +160,7 @@ export async function handleBuildCallback(data: {
         status: 'success',
         output_path: apkUrl,
         run_id: data.run_id,
-        completed_at: new Date().toISOString(),
+        completed_at: toMySQLDateTime(),
       });
     } else {
       // APK 下载失败，但构建成功，记录下载链接
@@ -166,7 +170,7 @@ export async function handleBuildCallback(data: {
         output_path: fallbackUrl,
         run_id: data.run_id,
         build_log: `构建成功 (run_id: ${data.run_id})，APK 可从 GitHub Actions Artifacts 下载`,
-        completed_at: new Date().toISOString(),
+        completed_at: toMySQLDateTime(),
       });
     }
   } else {
@@ -174,7 +178,7 @@ export async function handleBuildCallback(data: {
       status: 'failed',
       run_id: data.run_id,
       build_log: data.error || '构建失败',
-      completed_at: new Date().toISOString(),
+      completed_at: toMySQLDateTime(),
     });
   }
 }

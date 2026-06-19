@@ -6,7 +6,7 @@ on:
       task_id:
         description: '构建任务ID（由服务器生成）'
         required: true
-        type: number
+        type: string
       version_name:
         description: '版本号'
         required: true
@@ -14,7 +14,7 @@ on:
       version_code:
         description: '版本代码'
         required: true
-        type: number
+        type: string
       callback_url:
         description: '构建完成回调URL'
         required: true
