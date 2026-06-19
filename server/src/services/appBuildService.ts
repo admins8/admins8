@@ -82,20 +82,21 @@ export async function triggerGitHubActionsBuild(
     return { error: 'GitHub Actions 未配置，请在 .env 中设置 GITHUB_TOKEN、GITHUB_OWNER、GITHUB_REPO' };
   }
 
-  // 构建回调 URL（服务器需要从外网可访问）
-  const callbackUrl = serverUrl
-    ? `${serverUrl}/api/app/build-callback`
-    : '';
+  const inputs: Record<string, string> = {
+    task_id: String(taskId),
+    version_name: versionName,
+    version_code: String(versionCode),
+    callback_secret: callbackSecret,
+  };
+
+  // 只有配置了回调 URL 才传递
+  if (serverUrl) {
+    inputs.callback_url = `${serverUrl}/api/app/build-callback`;
+  }
 
   const body = JSON.stringify({
     ref: 'main',
-    inputs: {
-      task_id: taskId,
-      version_name: versionName,
-      version_code: versionCode,
-      callback_url: callbackUrl,
-      callback_secret: callbackSecret,
-    },
+    inputs,
   });
 
   return new Promise((resolve) => {

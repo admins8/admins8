@@ -16,13 +16,15 @@ on:
         required: true
         type: string
       callback_url:
-        description: '构建完成回调URL'
-        required: true
+        description: '构建完成回调URL（留空则跳过回调）'
+        required: false
         type: string
+        default: ''
       callback_secret:
         description: '回调密钥'
-        required: true
+        required: false
         type: string
+        default: 'legado-build-secret'
 
 jobs:
   build:
@@ -87,27 +89,27 @@ jobs:
           retention-days: 7
 
       - name: Notify server (success)
-        if: success()
+        if: success() && github.event.inputs.callback_url != ''
         run: |
           APK_SIZE=$(stat -c%s mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk 2>/dev/null || echo "0")
           curl -X POST "${{ github.event.inputs.callback_url }}" \
             -H "Content-Type: application/json" \
             -H "X-Build-Secret: ${{ github.event.inputs.callback_secret }}" \
             -d "{
-              \"task_id\": ${{ github.event.inputs.task_id }},
+              \"task_id\": \"${{ github.event.inputs.task_id }}\",
               \"status\": \"success\",
               \"run_id\": \"${{ github.run_id }}\",
               \"apk_size\": ${APK_SIZE}
             }"
 
       - name: Notify server (failure)
-        if: failure()
+        if: failure() && github.event.inputs.callback_url != ''
         run: |
           curl -X POST "${{ github.event.inputs.callback_url }}" \
             -H "Content-Type: application/json" \
             -H "X-Build-Secret: ${{ github.event.inputs.callback_secret }}" \
             -d "{
-              \"task_id\": ${{ github.event.inputs.task_id }},
+              \"task_id\": \"${{ github.event.inputs.task_id }}\",
               \"status\": \"failed\",
               \"run_id\": \"${{ github.run_id }}\",
               \"error\": \"Build failed in GitHub Actions\"
