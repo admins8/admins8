@@ -159,8 +159,9 @@ export async function searchBooks(req: Request, res: Response): Promise<void> {
       }
     }
 
-    const { keyword, key } = req.query;
+    const { keyword, key, author } = req.query;
     const searchKey = keyword || key || '';
+    const referenceAuthor = author ? String(author) : undefined;
     if (!searchKey) {
       sendEvent({ type: 'error', msg: '缺少搜索关键词' });
       res.end();
@@ -169,10 +170,11 @@ export async function searchBooks(req: Request, res: Response): Promise<void> {
 
     // 参数说明：
     //   startIndex: 从第几个书源开始（0-based）
-    //   targetCount: 想要多少条有效结果（默认 10，上限 50）
-    //   不是"搜N个书源就停止"，而是"一直搜直到拿到N条匹配的书"
+    //   targetCount: 想要多少条有效结果（默认无上限，搜索所有启用书源）
+    //   传 0 或不传表示无上限，搜索所有书源
     const startIndex = Math.max(0, parseInt(String(req.query.startIndex || '0'), 10) || 0);
-    const targetCount = Math.max(1, Math.min(50, parseInt(String(req.query.targetCount || req.query.batchSize || '10'), 10) || 10));
+    const rawTargetCount = parseInt(String(req.query.targetCount || req.query.batchSize || '0'), 10) || 0;
+    const targetCount = rawTargetCount > 0 ? rawTargetCount : 0; // 0 = 无上限
     const forceRefresh = req.query.force === '1' || req.query.refresh === '1';
     const forceVerifyToc = req.query.verifyToc === '1' || req.query.verifyToc === 'true';
     const searchMode = req.query.mode === 'switch' ? 'switch' : 'normal';
@@ -232,12 +234,12 @@ export async function searchBooks(req: Request, res: Response): Promise<void> {
                OR name LIKE ?
             ORDER BY updated_at DESC
             LIMIT ?`,
-          [cleanKwForLocal, `%${String(searchKey || '').trim()}%`, targetCount]
+          [cleanKwForLocal, `%${String(searchKey || '').trim()}%`, targetCount > 0 ? targetCount : 10000]
         );
         const localRanked = rankSearchResults(String(searchKey || ''), localRows || []);
         for (const row of localRanked) {
-          if (preEmittedLocalCount >= targetCount) break;
-          const match = classifySearchResult(String(searchKey || ''), row);
+          if (targetCount > 0 && preEmittedLocalCount >= targetCount) break;
+          const match = classifySearchResult(String(searchKey || ''), row, referenceAuthor);
           if (match.level === 'none' || match.level === 'weak') continue;
           const bookUrl = String(row.bookUrl || '').trim();
           if (!bookUrl || preEmittedSeenBookUrls.has(bookUrl)) continue;
@@ -392,8 +394,8 @@ export async function searchBooks(req: Request, res: Response): Promise<void> {
         );
         const localRanked = rankSearchResults(String(searchKey || ''), localRows || []);
         for (const row of localRanked) {
-          if (emittedResults.length >= targetCount) break;
-          const match = classifySearchResult(String(searchKey || ''), row);
+          if (targetCount > 0 && emittedResults.length >= targetCount) break;
+          const match = classifySearchResult(String(searchKey || ''), row, referenceAuthor);
           if (match.level === 'none' || match.level === 'weak') continue;
           const bookUrl = String(row.bookUrl || '').trim();
           if (!bookUrl || seenBookUrls.has(bookUrl)) continue;
@@ -443,7 +445,7 @@ export async function searchBooks(req: Request, res: Response): Promise<void> {
     const processSource = async (source: any): Promise<any | null> => {
       try {
         if (cancellation.isCancelled()) return null;
-        const sourceEngine = new WebBookEngine(searchRequestOptions);
+        const sourceEngine = new WebBookEngine();
         const startedAt = Date.now();
         const books = await Promise.race<SearchBookResult[]>([
           sourceEngine.search(source, String(searchKey || '').trim()),
@@ -469,7 +471,7 @@ export async function searchBooks(req: Request, res: Response): Promise<void> {
         if (isKnownUnreadableSearchCandidate(source, bestBook)) return null;
         if (cancellation.isCancelled()) return null;
 
-        const match = classifySearchResult(String(searchKey || ''), bestBook);
+        const match = classifySearchResult(String(searchKey || ''), bestBook, referenceAuthor);
         if (match.level === 'none' || match.level === 'weak') return null;
         const readability = forceVerifyToc
           ? await verifyReadableBookCandidate({
@@ -523,11 +525,102 @@ export async function searchBooks(req: Request, res: Response): Promise<void> {
     const workerCount = Math.min(CONCURRENCY, remainingSources.length);
     const workers = Array.from({ length: workerCount }, async () => {
       while (!cancellation.isCancelled()) {
-        if (emittedResults.length >= targetCount) return;
+        if (targetCount > 0 && emittedResults.length >= targetCount) return;
         const idx = sourceCursor++;
         if (idx >= remainingSources.length) return;
         const book = await processSource(remainingSources[idx]);
         completedSources++;
         searchedToIndex = Math.max(searchedToIndex, startIndex + idx + 1);
         if (book) {
-          for 
+          for (const rankedBook of rankSearchResults(String(searchKey || ''), [book])) {
+            if (rankedBook.bookUrl && !seenBookUrls.has(rankedBook.bookUrl)) {
+              seenBookUrls.add(rankedBook.bookUrl);
+              rawResults.push(rankedBook);
+            }
+          }
+          emitAggregatedResults();
+        }
+        if (completedSources % Math.max(1, Math.floor(CONCURRENCY / 2)) === 0 || book) {
+          sendEvent({
+            type: 'progress',
+            searched: searchedToIndex,
+            total: totalSources,
+            results: emittedResults.length,
+            batchStart: startIndex,
+          });
+        }
+      }
+    });
+    await Promise.allSettled(workers);
+
+    if (cancellation.isCancelled()) return;
+    emitAggregatedResults();
+
+    if (cancellation.isCancelled()) return;
+    const finalResults = aggregateSearchResults(
+      String(searchKey || ''),
+      rawResults
+    );
+    for (const book of finalResults) {
+      if (targetCount > 0 && emittedResults.length >= targetCount) break;
+      if (book._matchLevel !== 'exact') continue;
+      if (forceVerifyToc && !book._readable) continue;
+      const previousCount = emittedAggregateSourceCounts.get(book._aggregateKey) || 0;
+      if (book.sourceCount > previousCount) {
+        emittedAggregateSourceCounts.set(book._aggregateKey, book.sourceCount);
+        const existingIndex = emittedResults.findIndex((item) => item._aggregateKey === book._aggregateKey);
+        if (existingIndex >= 0) {
+          emittedResults[existingIndex] = book;
+        } else {
+          emittedResults.push(book);
+        }
+        sendEvent({ type: 'result', data: { ...book, _fallback: !book._readable }, count: emittedResults.length });
+      }
+    }
+
+    // --- 写入缓存（记录本轮搜索到的位置与结果）---
+    try {
+      if (!cancellation.isCancelled() && cache && (cache as any).client) {
+        let kwHash = 0;
+        for (let i = 0; i < normalizedKey.length; i++) {
+          kwHash = ((kwHash << 5) - kwHash) + normalizedKey.charCodeAt(i);
+          kwHash |= 0;
+        }
+        const batchCacheKey = `legado:search:v18:${transportCacheVersion}:${Math.abs(kwHash).toString(36)}:${startIndex}:${targetCount}:${totalSources}`;
+        const ttl = (cache as any).options?.ttlSeconds || 600;
+        await (cache as any).client.setEx(
+          batchCacheKey, ttl,
+          JSON.stringify({ results: finalResults, batchStart: startIndex, searchedTo: searchedToIndex, totalSources, keyword: searchKey })
+        );
+      }
+    } catch (cacheErr: any) {
+      console.log('[搜索缓存写入] 跳过:', cacheErr?.message);
+    }
+
+    const hasMore = searchedToIndex < totalSources;
+    if (cancellation.isCancelled()) return;
+    sendEvent({
+      type: 'done',
+      total: totalSources,
+      searched: searchedToIndex,
+      results: emittedResults.length,
+      hasMore,
+      batchStart: startIndex,
+      cached: false,
+    });
+    await recordUserSearch({
+      userId: user?.userId,
+      keyword: String(searchKey),
+      resultCount: emittedResults.length,
+      ipAddress: req.ip,
+    });
+    console.log(`[搜索完成] 关键词:"${searchKey}" 书源:${startIndex}-${searchedToIndex}/${totalSources} 结果:${emittedResults.length} 目标:${targetCount} hasMore:${hasMore}`);
+  } catch (err: any) {
+    if (!cancellation.isCancelled()) sendEvent({ type: 'error', msg: err.message });
+  } finally {
+    await searchSlot.release();
+    if (!res.destroyed && !res.writableEnded) res.end();
+  }
+}
+
+// 获取当前书籍的可换书源

@@ -2,9 +2,10 @@ import { query, queryOne, execute } from '../config/database';
 import { webBookEngine } from './webBookService';
 import { interpretValidationResult } from './sourceValidator';
 
-export const DEFAULT_SOURCE_VALIDATE_KEYWORD = '诡秘之主';
-export const DEFAULT_SOURCE_VALIDATE_TIMEOUT = 15000;
-export const DEFAULT_SOURCE_VALIDATE_CONCURRENCY = 5;
+export const DEFAULT_SOURCE_VALIDATE_KEYWORD = '元尊,凡人修仙传,雪中悍刀行';
+export const DEFAULT_SOURCE_VALIDATE_TIMEOUT = 30000;
+export const DEFAULT_SOURCE_VALIDATE_CONCURRENCY = 2;
+export const DEFAULT_SOURCE_VALIDATE_DELAY_MS = 1200;
 
 export type SourceValidationFailureAction = 'none' | 'disable' | 'delete';
 export type SourceValidationScope = 'enabled' | 'all' | 'failed';
@@ -230,6 +231,10 @@ export async function runSourceValidationSchedule(settings?: SourceValidationSch
         const action = await applyFailureAction(source.id, cfg.failureAction);
         if (action === 'disabled') disabledCount++;
         if (action === 'deleted') deletedCount++;
+      }
+      // 请求间隔，防止触发目标站限流
+      if (cursor < sources.length) {
+        await new Promise(resolve => setTimeout(resolve, DEFAULT_SOURCE_VALIDATE_DELAY_MS));
       }
     }
   });

@@ -62,4 +62,5 @@ test('formatSmtpError explains 163 permission failures', () => {
   });
 
   assert.match(message, /客户端授权码/);
-  assert.match(message, /responseCode=550
+  assert.match(message, /responseCode=550/);
+});

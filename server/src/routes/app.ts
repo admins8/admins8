@@ -41,6 +41,7 @@ router.post('/build-callback', appController.buildCallback);
 // 管理员API
 router.get('/admin/config', authMiddleware, adminMiddleware, appController.getConfig);
 router.post('/admin/config', authMiddleware, adminMiddleware, appController.updateConfig);
+router.put('/admin/config', authMiddleware, adminMiddleware, appController.updateConfig);
 router.post('/admin/upload-icon', authMiddleware, adminMiddleware, upload.single('icon'), appController.uploadIcon);
 router.post('/admin/upload-splash', authMiddleware, adminMiddleware, upload.single('splash'), appController.uploadSplash);
 

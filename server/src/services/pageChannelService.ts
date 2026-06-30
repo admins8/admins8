@@ -286,3 +286,149 @@ export async function deleteItem(id: number) {
   await execute('DELETE FROM page_section_items WHERE id = ?', [id]);
   return { id };
 }
+
+// 区块编码 -> 查询策略配置
+// categoryKeywords: 分类关键词数组，任一匹配即可；匹配kind/category/name字段
+// 注意：区块标题可在后台自定义修改，关键词应覆盖常见变体和同义词
+const sectionFillConfig: Record<string, { orderBy: string; limit: number; categoryKeywords?: string[] }> = {
+  hero_slider:        { orderBy: 'RAND()',                       limit: 4 },
+  editor_recommend:   { orderBy: 'RAND()',                       limit: 6 },
+  chief_recommend:    { orderBy: 'b.updated_at DESC',            limit: 4 },
+  editor_force:       { orderBy: 'RAND()',                       limit: 4 },
+  rising_new:         { orderBy: 'b.created_at DESC',            limit: 6 },
+  new_debut:          { orderBy: 'b.created_at DESC',            limit: 6 },
+  latest_updates:     { orderBy: 'b.updated_at DESC',            limit: 12 },
+  latest_added:       { orderBy: 'b.created_at DESC',            limit: 12 },
+  most_updated:       { orderBy: 'b.total_chapter_num DESC',     limit: 12 },
+  // 古言/古代言情：标题可能为"古言"、"古代"、"古风"等
+  ancient_romance:    { orderBy: 'b.updated_at DESC',            limit: 6, categoryKeywords: ['古言','古代','古风','宫斗','穿越古代','种田','宅斗','架空历史','玄幻'] },
+  // 现言/现代言情：标题可能为"现言"、"现代"、"都市"等
+  modern_romance:     { orderBy: 'b.updated_at DESC',            limit: 6, categoryKeywords: ['现言','现代','都市言情','总裁','豪门','婚恋','职场','校园爱情','都市'] },
+  // 幻情/玄幻言情：标题可能为"言情"、"幻情"、"玄幻"等
+  fantasy_romance:    { orderBy: 'b.updated_at DESC',            limit: 6, categoryKeywords: ['幻情','玄幻言情','奇幻','魔幻','异能','异世','言情','玄幻','女生'] },
+  // 仙侠：标题可能为"仙侠"、"修真"等
+  xianxia:            { orderBy: 'b.updated_at DESC',            limit: 6, categoryKeywords: ['仙侠','修真','修仙','洪荒','武道','玄幻','武侠'] },
+  // 青春/校园：标题可能为"青春"、"校园"、"军事"等
+  youth:              { orderBy: 'b.updated_at DESC',            limit: 6, categoryKeywords: ['青春','校园','初恋','纯爱','成长','军事','军旅','抗战'] },
+  // 游戏/网游：标题可能为"游戏"、"网游"、"电竞"等
+  game:               { orderBy: 'b.updated_at DESC',            limit: 6, categoryKeywords: ['游戏','电竞','网游','竞技','网游小说'] },
+  // 科幻：标题可能为"科幻"、"末世"等
+  sci_fi:             { orderBy: 'b.updated_at DESC',            limit: 6, categoryKeywords: ['科幻','末世','星际','未来','机甲','太空','女生'] },
+  // 悬疑：标题可能为"悬疑"、"推理"等
+  mystery:            { orderBy: 'b.updated_at DESC',            limit: 6, categoryKeywords: ['悬疑','推理','侦探','破案','惊悚','恐怖','灵异','武侠'] },
+};
+
+/**
+ * 构建分类搜索WHERE条件和参数
+ */
+function buildCategoryWhere(keywords: string[]): { where: string; params: any[] } {
+  if (!keywords || keywords.length === 0) return { where: '', params: [] };
+  const conditions: string[] = [];
+  const params: any[] = [];
+  for (const kw of keywords) {
+    const pattern = `%${kw}%`;
+    conditions.push('(b.kind LIKE ? OR b.category LIKE ? OR b.name LIKE ? OR b.intro LIKE ?)');
+    params.push(pattern, pattern, pattern, pattern);
+  }
+  return { where: ' AND (' + conditions.join(' OR ') + ')', params };
+}
+
+/**
+ * 一键拉取书籍填充到指定区块
+ * @param sectionId 区块ID
+ * @param replace   是否替换现有条目（true=清空后填充，false=追加）
+ */
+export async function autoFillSection(sectionId: number, replace: boolean = true) {
+  const section = await queryOne('SELECT * FROM page_sections WHERE id = ?', [sectionId]) as any;
+  if (!section) throw new Error('区块不存在');
+
+  const cfg = sectionFillConfig[section.section_code] || { orderBy: 'RAND()', limit: 6 };
+
+  // 查询书籍
+  let books: any[] = [];
+  let whereClause = 'WHERE 1=1';
+  const params: any[] = [];
+
+  if (cfg.categoryKeywords && cfg.categoryKeywords.length > 0) {
+    const { where, params: kwParams } = buildCategoryWhere(cfg.categoryKeywords);
+    whereClause += where;
+    params.push(...kwParams);
+    books = await query(
+      `SELECT b.* FROM books b ${whereClause} ORDER BY ${cfg.orderBy} LIMIT ?`,
+      [...params, cfg.limit],
+    ) as any[];
+    // 如果按分类没找到书，不再回退随机取书，避免填入不相关书籍
+    if (books.length === 0) {
+      return { filled: 0, section_code: section.section_code };
+    }
+  } else {
+    books = await query(
+      `SELECT b.* FROM books b ${whereClause} ORDER BY ${cfg.orderBy} LIMIT ?`,
+      [...params, cfg.limit],
+    ) as any[];
+  }
+
+  if (books.length === 0) {
+    throw new Error('书库中暂无书籍，请先采集书籍');
+  }
+
+  await transaction(async (conn) => {
+    if (replace) {
+      await conn.execute('DELETE FROM page_section_items WHERE section_id = ?', [sectionId]);
+    }
+
+    const existingRows = await conn.query(
+      'SELECT COUNT(*) as cnt FROM page_section_items WHERE section_id = ?',
+      [sectionId],
+    ) as any;
+    let sortOffset = (existingRows[0]?.cnt || 0) + 1;
+
+    for (const book of books) {
+      const cover = book.custom_cover_url || book.cover_url || '';
+      const linkUrl = `/book-detail?bookUrl=${encodeURIComponent(book.book_url)}`;
+      const category = book.category || book.kind || '';
+      await conn.execute(
+        `INSERT INTO page_section_items
+         (section_id, title, author, cover_url, intro, category, word_count, latest_chapter, link_url, sort_order, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        [
+          sectionId,
+          book.name || '',
+          book.author || '',
+          cover,
+          book.custom_intro || book.intro || '',
+          category,
+          book.word_count || '',
+          book.latest_chapter_title || '',
+          linkUrl,
+          sortOffset++,
+        ],
+      );
+    }
+  });
+
+  return { filled: books.length, section_code: section.section_code };
+}
+
+/**
+ * 一键拉取书籍填充整个频道所有区块
+ */
+export async function autoFillChannel(code: string) {
+  sanitizeCode(code);
+  const sections = await query('SELECT id, section_code FROM page_sections WHERE channel_code = ?', [code]) as any[];
+  const results: Record<string, number> = {};
+  for (const s of sections) {
+    // 幻灯片区块不放自动拉取的书籍，由管理员手动设置
+    if (s.section_code === 'hero_slider') {
+      results[s.section_code] = 0;
+      continue;
+    }
+    try {
+      const r = await autoFillSection(s.id, true);
+      results[s.section_code] = r.filled;
+    } catch (e: any) {
+      results[s.section_code] = 0;
+    }
+  }
+  return results;
+}

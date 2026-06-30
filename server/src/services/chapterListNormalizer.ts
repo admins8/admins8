@@ -33,4 +33,11 @@ export function normalizeChapterList(input: any[], options: NormalizeChapterList
 
     const urlKey = url.toLowerCase();
     const titleKey = title.toLowerCase();
-    if (seenUrls.has(urlKey) || 
+    if (seenUrls.has(urlKey) || (dedupeTitle && seenTitles.has(titleKey))) continue;
+    seenUrls.add(urlKey);
+    if (dedupeTitle) seenTitles.add(titleKey);
+    result.push({ ...chapter, index: result.length });
+  }
+
+  return result;
+}

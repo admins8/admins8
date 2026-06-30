@@ -1,5 +1,6 @@
-import axios, { AxiosRequestConfig } from 'axios';
+import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import { getAgentForUrl } from './httpAgent';
+import { cookieStore } from './cookieStore';
 
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
@@ -452,14 +453,76 @@ export function resolveScriptSearchUrl(rawSearchUrl: string, baseUrl?: string): 
   return '';
 }
 
+function detectCharsetFromResponse(response: any, buffer: Buffer): string {
+  // 1. 从 HTTP Content-Type 响应头提取 charset
+  const contentType = response.headers?.['content-type'] || '';
+  const headerMatch = String(contentType).match(/charset=([^;\s]+)/i);
+  if (headerMatch) {
+    const cs = headerMatch[1].replace(/["']/g, '').trim().toLowerCase();
+    if (cs && cs !== 'utf-8' && cs !== 'utf8') return cs;
+  }
+
+  // 2. 从 HTML meta 标签提取 charset（先用 utf-8 解码前 4KB）
+  try {
+    const preview = buffer.toString('utf-8', 0, Math.min(buffer.length, 4096));
+    // <meta charset="gbk">
+    const metaCharsetMatch = preview.match(/<meta[^>]+charset=["']?([^"'>\s]+)/i);
+    if (metaCharsetMatch) {
+      const cs = metaCharsetMatch[1].trim().toLowerCase();
+      if (cs && cs !== 'utf-8' && cs !== 'utf8') return cs;
+    }
+    // <meta http-equiv="Content-Type" content="text/html; charset=gbk">
+    const metaContentTypeMatch = preview.match(/<meta[^>]+http-equiv=["']?content-type["']?[^>]+content=["']?([^"'>]+)/i)
+      || preview.match(/<meta[^>]+content=["']?([^"'>]+)["']?[^>]+http-equiv=["']?content-type["']?/i);
+    if (metaContentTypeMatch) {
+      const ctMatch = metaContentTypeMatch[1].match(/charset=([^;\s]+)/i);
+      if (ctMatch) {
+        const cs = ctMatch[1].trim().toLowerCase();
+        if (cs && cs !== 'utf-8' && cs !== 'utf8') return cs;
+      }
+    }
+  } catch {
+    // 忽略解码错误
+  }
+
+  return '';
+}
+
 export async function httpRequest(url: string, headers: Record<string, string>, option: UrlOption = {}): Promise<string> {
   const method = (option.method || 'GET').toUpperCase();
   const charset = option.charset || '';
+
+  // webView 模式：使用浏览器渲染（支持 Android BackstageWebView 模拟）
+  if (option.webView) {
+    try {
+      const { fetchWithBrowser } = await import('./browserRender');
+      return await fetchWithBrowser(url, {
+        timeout: option.timeoutMs || 30000,
+        webView: typeof option.webView === 'string' ? option.webView : true,
+        userAgent: headers['User-Agent'],
+      });
+    } catch (browserError: any) {
+      console.error(`[httpRequest] webView 渲染失败，回退到 HTTP 请求: ${browserError.message}`);
+      // 浏览器渲染失败，回退到普通 HTTP 请求
+    }
+  }
+
+  // 从 Cookie 存储加载已保存的 Cookie
+  const savedCookie = cookieStore.getCookieString(url);
+  if (savedCookie) {
+    const existingCookie = headers['Cookie'] || headers['cookie'] || '';
+    headers['Cookie'] = existingCookie ? `${existingCookie}; ${savedCookie}` : savedCookie;
+  }
+
   const runtimeHeaders = applyRuntimeRequestOptions(headers, option);
   const profiles = option.forceRandomUserAgent
     ? [{ name: '模拟 UA', headers: buildRequestHeaders(url, runtimeHeaders, option.headers || {}) }]
     : buildRetryHeaderProfiles(url, runtimeHeaders, option.headers || {});
-  const requestProfiles = option.retry === 0 ? profiles.slice(0, 1) : profiles;
+  const requestProfiles = option.retry === 0
+    ? profiles.slice(0, 1)
+    : typeof option.retry === 'number' && option.retry > 0
+      ? profiles.slice(0, Math.min(option.retry + 1, profiles.length))
+      : profiles;
   const proxyAxiosConfig = buildProxyAxiosConfig(option.proxy || '');
   let lastError: any;
   for (const profile of requestProfiles) {
@@ -484,13 +547,38 @@ export async function httpRequest(url: string, headers: Record<string, string>, 
     }
     try {
       const response = await axios(axiosConfig);
+
+      // 提取并保存 Set-Cookie
+      const setCookieHeaders = response.headers?.['set-cookie'];
+      if (setCookieHeaders) {
+        const rawCookies = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
+        cookieStore.saveCookies(url, rawCookies);
+      }
+
       const buffer = Buffer.from(response.data);
-      if (charset && charset.toLowerCase() !== 'utf-8' && charset.toLowerCase() !== 'utf8') {
+      const detectedCharset = charset || detectCharsetFromResponse(response, buffer);
+      if (detectedCharset && detectedCharset.toLowerCase() !== 'utf-8' && detectedCharset.toLowerCase() !== 'utf8') {
         try {
           const iconv = await import('iconv-lite');
-          return iconv.decode(buffer, charset as any);
+          return iconv.decode(buffer, detectedCharset as any);
         } catch {
           return buffer.toString('utf-8');
         }
       }
-      return buffer.toString('
+      return buffer.toString('utf-8');
+    } catch (error: any) {
+      // 即使错误响应也可能有 Set-Cookie
+      if (error?.response?.headers?.['set-cookie']) {
+        const rawCookies = Array.isArray(error.response.headers['set-cookie'])
+          ? error.response.headers['set-cookie']
+          : [error.response.headers['set-cookie']];
+        cookieStore.saveCookies(url, rawCookies);
+      }
+      lastError = error;
+      if (!shouldRetryWithNextHeader(error)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
+}

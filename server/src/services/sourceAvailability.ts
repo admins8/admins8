@@ -10,8 +10,9 @@ export function isUsableChapter(chapter: any): boolean {
   if (!title || !url) return false;
   if (title.includes('@') || title.includes('{') || title.includes('}') || title.includes('<') || title.includes('>')) return false;
   if (title.includes('.*?') || title.includes('(?')) return false;
-  if (/^(首页|书库|排行|排行榜|完本|足迹|历史|登录|注册|搜索|分类|目录|返回|上一页|下一页|章节目录)$/.test(title)) return false;
-  if (!/(第.+(章|节|回|卷)|章|楔子|序章|引子|正文|番外|终章|大结局|完本感言|新书|^\d{1,5}\s*[、.．]\s*\S+)/.test(title)) return false;
+  if (/^(首页|书库|排行|排行榜|完本|足迹|历史|登录|注册|搜索|分类|返回|上一页|下一页)$/.test(title)) return false;
+  // 放宽标题匹配：只要不是明显的导航/广告标题即可
+  if (/^(目录|章节目录|全文阅读|加入书架|开始阅读|立即阅读|最新章节|TXT下载|举报)$/.test(title)) return false;
   return true;
 }
 
@@ -43,4 +44,7 @@ export async function hasAvailableChapters(
       }
     }
     return false;
-  } catch
+  } catch {
+    return false;
+  }
+}

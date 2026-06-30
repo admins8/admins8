@@ -38,3 +38,21 @@ test('buildRetryHeaderProfiles changes user agent while preserving custom cookie
   assert.equal(profiles[1].headers.Cookie, 'sid=1');
   assert.notEqual(profiles[1].headers['User-Agent'], profiles[0].headers['User-Agent']);
 });
+
+test('buildRetryHeaderProfiles includes a simple collector profile without referer or origin', () => {
+  const profiles = buildRetryHeaderProfiles(
+    'https://www.kanxiaoshuo123.com/654752/',
+    buildHeaders('{"Cookie":"sid=1","User-Agent":"custom-UA","Referer":"https://blocked.example/","Origin":"https://blocked.example"}')
+  );
+
+  const simpleProfile = profiles.find(profile => profile.name === '简洁采集请求头');
+
+  assert.ok(simpleProfile, '应包含简洁采集请求头画像');
+  assert.equal(simpleProfile.headers.Cookie, 'sid=1');
+  assert.equal(simpleProfile.headers['User-Agent'], 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+  assert.equal(simpleProfile.headers.Accept, 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8');
+  assert.equal(simpleProfile.headers['Accept-Language'], 'zh-CN,zh;q=0.9');
+  assert.equal(simpleProfile.headers.DNT, '1');
+  assert.equal('Referer' in simpleProfile.headers, false);
+  assert.equal('Origin' in simpleProfile.headers, false);
+});

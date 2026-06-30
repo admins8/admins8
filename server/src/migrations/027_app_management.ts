@@ -15,6 +15,12 @@ export async function up(db: mysql.Pool): Promise<void> {
       user_agreement_url VARCHAR(255),
       icon_path VARCHAR(255),
       splash_path VARCHAR(255),
+      github_token VARCHAR(255),
+      github_owner VARCHAR(100),
+      github_repo VARCHAR(100),
+      github_workflow VARCHAR(100) DEFAULT 'build-android.yml',
+      github_branch VARCHAR(100) DEFAULT 'main',
+      build_callback_secret VARCHAR(255),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

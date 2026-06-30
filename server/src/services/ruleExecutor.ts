@@ -1,7 +1,19 @@
 import * as cheerio from 'cheerio';
 import { JSONPath } from 'jsonpath-plus';
-import { runSourceScript } from './safeScriptRunner';
+import { runSourceScript, type RunScriptOptions } from './safeScriptRunner';
 import type { RuleExecutionResult } from './sourceTypes';
+import { getCachedRegex, ruleVariables } from './ruleCache';
+
+// 全局执行上下文，用于传递书源信息到 JS 沙箱
+let globalExecutionContext: RunScriptOptions = {};
+
+export function setRuleExecutionContext(ctx: RunScriptOptions): void {
+  globalExecutionContext = ctx;
+}
+
+export function getRuleExecutionContext(): RunScriptOptions {
+  return globalExecutionContext;
+}
 
 function parseJsoupSelector(selector: string, $: cheerio.CheerioAPI, context?: any): any {
   selector = selector.trim().replace(/^@css:\s*/i, '');
@@ -169,6 +181,29 @@ export function executeRule(rule: string, html: string, isJson: boolean = false)
   if (!rule || rule.trim() === '') return [];
   rule = rule.trim().replace(/^@css:\s*/i, '');
 
+  // 替换规则中的变量引用 {{key}}
+  rule = ruleVariables.replaceVariables(rule);
+
+  // 正则主规则模式: regex:pattern 或 regex:pattern##replacement
+  if (rule.startsWith('regex:')) {
+    const regexRule = rule.substring(6);
+    const replaceMatch = regexRule.match(/^(.+?)##(.+)$/);
+    try {
+      if (replaceMatch) {
+        const regex = getCachedRegex(replaceMatch[1], 'g');
+        const matches = html.match(regex);
+        if (matches) {
+          return matches.map(m => m.replace(getCachedRegex(replaceMatch[1], ''), replaceMatch[2]));
+        }
+        return [];
+      } else {
+        const regex = getCachedRegex(regexRule, 'g');
+        const matches = html.match(regex);
+        return matches ? matches.map(String) : [];
+      }
+    } catch { return []; }
+  }
+
   const regexReplaceMatch = rule.match(/^(.+?)##(.+?)##(.+)$/);
   if (regexReplaceMatch) {
     const baseResults = executeRule(regexReplaceMatch[1], html, isJson);
@@ -182,7 +217,7 @@ export function executeRule(rule: string, html: string, isJson: boolean = false)
   if (rule.trimStart().startsWith('js:') || rule.trimStart().startsWith('<js>')) {
     const jsCode = rule.replace(/^js:\s*/, '').replace(/^<js>/, '').replace(/<\/js>$/, '');
     try {
-      return normalizeScriptResult(runSourceScript(jsCode, { result: null, html }));
+      return normalizeScriptResult(runSourceScript(jsCode, { result: null, html }, globalExecutionContext));
     } catch { return []; }
   }
 
@@ -290,7 +325,7 @@ function executeJsoupRule(rule: string, html: string, isJson: boolean): string[]
         result: baseResults[0],
         html,
         source: { bookSourceUrl: '' },
-      }));
+      }, globalExecutionContext));
     } catch { return []; }
   }
 
@@ -299,7 +334,7 @@ function executeJsoupRule(rule: string, html: string, isJson: boolean): string[]
     const baseResults = executeRule(jsMatch[1], html, isJson);
     if (baseResults.length === 0) return [];
     try {
-      return normalizeScriptResult(runSourceScript(jsMatch[2], { result: baseResults[0], html }));
+      return normalizeScriptResult(runSourceScript(jsMatch[2], { result: baseResults[0], html }, globalExecutionContext));
     } catch { return []; }
   }
 

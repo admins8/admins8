@@ -16,9 +16,9 @@ export interface AppVersion {
 
 export async function listVersions(platform?: string): Promise<AppVersion[]> {
   if (platform) {
-    return query('SELECT * FROM app_versions WHERE platform = ? ORDER BY version_code DESC', [platform]) as AppVersion[];
+    return (await query('SELECT * FROM app_versions WHERE platform = ? ORDER BY version_code DESC', [platform])) as unknown as AppVersion[];
   }
-  return query('SELECT * FROM app_versions ORDER BY version_code DESC') as AppVersion[];
+  return (await query('SELECT * FROM app_versions ORDER BY version_code DESC')) as unknown as AppVersion[];
 }
 
 export async function createVersion(data: {

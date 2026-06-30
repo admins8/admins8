@@ -83,3 +83,17 @@ test('testSearchProxyConnection source includes fallback test endpoints', () => 
   assert.match(source, /http:\/\/httpbingo\.org\/anything/)
   assert.match(source, /http:\/\/postman-echo\.com\/get/)
 })
+
+test('httpRequest supports per-request timeoutMs option', () => {
+  const source = require('node:fs').readFileSync(require('node:path').resolve('src/services/bookSourceHttpClient.ts'), 'utf-8')
+
+  assert.match(source, /timeoutMs\?: number/)
+  assert.match(source, /timeout:\s*option\.timeoutMs\s*\|\|\s*10000/)
+})
+
+test('httpRequest supports retry zero to avoid gateway timeout on blackholed targets', () => {
+  const source = require('node:fs').readFileSync(require('node:path').resolve('src/services/bookSourceHttpClient.ts'), 'utf-8')
+
+  assert.match(source, /option\.retry\s*===\s*0/)
+  assert.match(source, /profiles\.slice\(0,\s*1\)/)
+})

@@ -3,7 +3,80 @@ import { executeRule } from './ruleExecutor';
 import * as cheerio from 'cheerio';
 import { buildHeaders, parseSearchUrl, UrlOption } from './bookSourceHttpClient';
 import { normalizeChapterList } from './chapterListNormalizer';
+import { refreshSchedulesNow } from './collectorScheduler';
 import { requestTargetHtml } from './targetAccess';
+
+// Puppeteer 浏览器单例
+let puppeteerBrowser: any = null;
+
+async function getPuppeteerBrowser(): Promise<any> {
+  if (!puppeteerBrowser || !puppeteerBrowser.isConnected || !puppeteerBrowser.isConnected()) {
+    const puppeteer = require('puppeteer-core');
+    console.log('[Puppeteer] Launching browser...');
+    puppeteerBrowser = await puppeteer.launch({
+      executablePath: '/usr/bin/chromium-browser',
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--window-size=1920,1080',
+      ],
+    });
+    console.log('[Puppeteer] Browser launched');
+  }
+  return puppeteerBrowser;
+}
+
+export async function closePuppeteerBrowser(): Promise<void> {
+  if (puppeteerBrowser) {
+    await puppeteerBrowser.close();
+    puppeteerBrowser = null;
+    console.log('[Puppeteer] Browser closed');
+  }
+}
+
+async function fetchHtmlWithPuppeteer(url: string, _rule: CollectorRulePayload): Promise<string> {
+  const browser = await getPuppeteerBrowser();
+  const page = await browser.newPage();
+  try {
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    );
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    });
+    console.log(`[Puppeteer] Navigating to ${url}`);
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    // 等待 Cloudflare 挑战通过
+    await page.waitForFunction(
+      () => {
+        const title = document.querySelector('title');
+        return !title || !title.textContent || !title.textContent.includes('Just a moment');
+      },
+      { timeout: 15000, polling: 500 }
+    ).catch(() => {
+      console.log('[Puppeteer] Cloudflare challenge may not have completed, proceeding anyway');
+    });
+    const html = await page.content();
+    console.log(`[Puppeteer] Fetched ${url}, length=${html.length}`);
+    return html;
+  } finally {
+    await page.close();
+  }
+}
+
+function isCloudflarePage(html: string): boolean {
+  return html.includes('challenge-platform') ||
+    html.includes('cf-chl') ||
+    html.includes('Just a moment') ||
+    html.includes('cf-browser-verification') ||
+    html.includes('Turnstile');
+}
 
 export interface CollectorDetailRules {
   name: string;
@@ -21,10 +94,29 @@ export interface CollectorTocRules {
   chapterUrl: string;
 }
 
+export interface CollectorListRules {
+  bookList: string;
+  bookName?: string;
+  bookAuthor?: string;
+  bookUrl?: string;
+  bookCover?: string;
+  bookLatestChapter?: string;
+  bookKind?: string;
+}
+
+export interface CollectorPagination {
+  pattern: string;
+  startPage: number;
+  maxPages: number;
+  increment: number;
+}
+
 export interface CollectorRulePayload {
   id?: number;
   name: string;
   entryUrl: string;
+  entryUrls: string[];
+  entryUrlConfigs?: Array<{ startPage: number; endPage: number }>;
   enabled?: boolean;
   charset?: string;
   headers?: Record<string, string> | string;
@@ -33,6 +125,9 @@ export interface CollectorRulePayload {
   detailRules: CollectorDetailRules;
   tocRules: CollectorTocRules;
   contentRule: string;
+  listUrl?: string;
+  listRules?: CollectorListRules;
+  pagination?: CollectorPagination;
 }
 
 export interface CollectorBookDraft {
@@ -252,7 +347,8 @@ function runCollectorRule(ruleText: string, html: string, asList = false): any {
   const raw = text(ruleText);
   if (!raw) return asList ? [] : '';
   const parts = raw.split('##');
-  const selector = parts.shift()!.replace(/@text\b/g, '');
+  // 不要移除 @text，它是合法的 Legado 规则后缀
+  const selector = parts.shift()!;
   let result = executeRule(selector, html, asList);
   if (!asList && parts.length > 0) {
     let value = text(result);
@@ -293,10 +389,32 @@ function parseHeaders(headers: CollectorRulePayload['headers']): Record<string, 
 export function normalizeCollectorRule(input: any): CollectorRulePayload {
   const detailRules = input?.detailRules || input?.detail_rules || {};
   const tocRules = input?.tocRules || input?.toc_rules || {};
-  return {
+  const listRules = input?.listRules || input?.list_rules || {};
+  const pagination = input?.pagination || input?.Pagination || {};
+  // 兼容旧的 entryUrl 单字符串，自动转为数组
+  let entryUrls: string[] = [];
+  if (Array.isArray(input?.entryUrls || input?.entry_urls)) {
+    entryUrls = (input.entryUrls || input.entry_urls).map((u: any) => text(u)).filter(Boolean);
+  }
+  const singleEntryUrl = text(input?.entryUrl || input?.entry_url || input?.url || '');
+  if (singleEntryUrl && !entryUrls.includes(singleEntryUrl)) {
+    entryUrls.unshift(singleEntryUrl);
+  }
+  // 读取每个网址的独立分页配置
+  const rawEntryUrlConfigs = input?.entryUrlConfigs || input?.entry_url_configs || [];
+  const entryUrlConfigs: Array<{ startPage: number; endPage: number }> = Array.isArray(rawEntryUrlConfigs)
+    ? rawEntryUrlConfigs
+        .map((c: any) => ({
+          startPage: Math.max(1, Number(c?.startPage ?? c?.start_page ?? 1)),
+          endPage: Math.max(1, Number(c?.endPage ?? c?.end_page ?? 1)),
+        }))
+        .filter((c: any) => c.endPage >= c.startPage)
+    : [];
+  const result: CollectorRulePayload = {
     ...(input?.id ? { id: Number(input.id) } : {}),
     name: text(input?.name || '未命名采集规则'),
-    entryUrl: text(input?.entryUrl || input?.entry_url || input?.url || ''),
+    entryUrl: entryUrls[0] || '',
+    entryUrls: entryUrls.length > 0 ? entryUrls : [''],
     enabled: input?.enabled !== false,
     charset: text(input?.charset || 'utf-8'),
     headers: input?.headers || {},
@@ -318,6 +436,41 @@ export function normalizeCollectorRule(input: any): CollectorRulePayload {
     },
     contentRule: normalizeKnownCollectorContentRule(input, text(input?.contentRule || input?.content_rule)),
   };
+  if (entryUrlConfigs.length > 0) {
+    result.entryUrlConfigs = entryUrlConfigs;
+  }
+  if (text(listRules.bookList)) {
+    result.listRules = {
+      bookList: text(listRules.bookList),
+      bookName: text(listRules.bookName || listRules.book_name),
+      bookAuthor: text(listRules.bookAuthor || listRules.book_author),
+      bookUrl: text(listRules.bookUrl || listRules.book_url),
+      bookCover: text(listRules.bookCover || listRules.book_cover),
+      bookLatestChapter: text(listRules.bookLatestChapter || listRules.book_latest_chapter),
+      bookKind: text(listRules.bookKind || listRules.book_kind || listRules.category),
+    };
+  }
+  if (text(pagination.pattern)) {
+    result.pagination = {
+      pattern: text(pagination.pattern),
+      startPage: Math.max(1, Number(pagination.startPage ?? pagination.start_page ?? 1)),
+      maxPages: Math.min(100, Math.max(1, Number(pagination.maxPages ?? pagination.max_pages ?? 1))),
+      increment: Math.max(1, Number(pagination.increment ?? 1)),
+    };
+    result.listUrl = text(input?.listUrl || input?.list_url || pagination.pattern);
+  }
+  // 如果 entryUrl 包含分页占位符但未配置 pagination，自动从 entryUrl 推导
+  const entryUrl = result.entryUrl;
+  if (!result.pagination && /\[page\]|\{page\}/.test(entryUrl)) {
+    result.pagination = {
+      pattern: entryUrl,
+      startPage: Math.max(1, Number(input?.startPage ?? input?.start_page ?? 1)),
+      maxPages: Math.min(100, Math.max(1, Number(input?.maxPages ?? input?.max_pages ?? 1))),
+      increment: Math.max(1, Number(input?.increment ?? 1)),
+    };
+    result.listUrl = text(input?.listUrl || input?.list_url || entryUrl);
+  }
+  return result;
 }
 
 export function extractBookByCollectorRule(html: string, detailUrl: string, inputRule: CollectorRulePayload): CollectorBookDraft {
@@ -379,19 +532,74 @@ export function collectorOrigin(url: string): string {
 
 async function fetchHtml(url: string, rule: CollectorRulePayload): Promise<string> {
   const parsed = parseSearchUrl(url);
-  return requestTargetHtml(parsed.url, buildHeaders(JSON.stringify(parseHeaders(rule.headers))), {
+
+  // 为分页请求添加 Referer（奇书网等网站需要 Referer 才能正确分页）
+  const headers = buildHeaders(JSON.stringify(parseHeaders(rule.headers)));
+  const pageMatch = parsed.url.match(/index_(\d+)\.html/);
+  if (pageMatch && Number(pageMatch[1]) > 1) {
+    const referer = parsed.url.replace(/index_\d+\.html/, 'index_1.html');
+    headers['Referer'] = referer;
+  }
+
+  const html = await requestTargetHtml(parsed.url, headers, {
     ...buildCollectorFetchOptions(rule, parsed.option),
     targetAccessMode: isIpaoshubaRule(rule) ? 'snapshot-first' : 'snapshot-fallback',
   });
+
+  // 检测 Cloudflare 挑战页面，切换到 Puppeteer
+  if (isCloudflarePage(html)) {
+    console.log(`[fetchHtml] Cloudflare detected for ${parsed.url}, switching to Puppeteer`);
+    return fetchHtmlWithPuppeteer(parsed.url, rule);
+  }
+
+  return html;
 }
 
 export async function fetchCollectorChapterContent(originName: string, chapterUrl: string): Promise<string | null> {
+  console.log(`[fetchCollectorChapterContent] originName=${originName}, chapterUrl=${chapterUrl}`);
   const row = await queryOne('SELECT * FROM collector_rules WHERE name=? AND enabled=1 LIMIT 1', [originName]);
-  if (!row) return null;
+  if (!row) {
+    console.log(`[fetchCollectorChapterContent] 未找到采集规则: originName=${originName}`);
+    return null;
+  }
+  console.log(`[fetchCollectorChapterContent] 找到规则: id=${row.id}, name=${row.name}`);
   const rule = normalizeCollectorRule(JSON.parse(row.rule_json || '{}'));
-  if (!rule.contentRule) return null;
+  if (!rule.contentRule) {
+    console.log(`[fetchCollectorChapterContent] 规则无contentRule`);
+    return null;
+  }
+  console.log(`[fetchCollectorChapterContent] contentRule=${rule.contentRule}`);
   const html = await fetchHtml(chapterUrl, rule);
-  return extractContentByCollectorRule(html, rule) || null;
+  console.log(`[fetchCollectorChapterContent] 获取HTML长度=${html.length}`);
+  const content = extractContentByCollectorRule(html, rule);
+  console.log(`[fetchCollectorChapterContent] 提取内容长度=${content?.length || 0}`);
+  return content || null;
+}
+
+export async function fetchCollectorChapterContentByBook(book: any, chapterUrl: string): Promise<string | null> {
+  // 优先按 origin_name 匹配采集规则
+  const originName = text(book?.origin_name || book?.originName);
+  if (originName) {
+    const content = await fetchCollectorChapterContent(originName, chapterUrl);
+    if (content) return content;
+  }
+  // 按 book_url 域名匹配采集规则
+  const bookUrl = text(book?.book_url || book?.bookUrl);
+  if (bookUrl) {
+    const bookOrigin = collectorOrigin(bookUrl);
+    if (bookOrigin) {
+      const rows = await query('SELECT * FROM collector_rules WHERE enabled=1 ORDER BY updated_at DESC, id DESC');
+      for (const row of rows) {
+        const rule = normalizeCollectorRule(JSON.parse(row.rule_json || '{}'));
+        if (collectorOrigin(rule.entryUrl) === bookOrigin && rule.contentRule) {
+          console.log(`[fetchCollectorChapterContentByBook] 通过域名匹配规则: id=${row.id}, name=${row.name}`);
+          const content = await fetchCollectorChapterContent(row.name as string, chapterUrl);
+          if (content) return content;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 export function buildCollectorFetchOptions(rule: CollectorRulePayload, parsedOption: UrlOption = {}): UrlOption {
@@ -415,7 +623,17 @@ export async function listCollectorRules() {
 
 export async function saveCollectorRule(input: any) {
   const rule = normalizeCollectorRule(input);
-  if (!rule.entryUrl) throw new Error('请填写单本详情页地址');
+  if (!rule.entryUrl && (!rule.entryUrls || rule.entryUrls.length === 0 || !rule.entryUrls[0])) {
+    throw new Error('请填写单本详情页地址');
+  }
+  // 确保 entryUrlConfigs 被保留在 ruleJson 中
+  if (Array.isArray(input?.entryUrlConfigs)) {
+    rule.entryUrlConfigs = input.entryUrlConfigs.map((c: any) => ({
+      startPage: Math.max(1, Number(c?.startPage ?? 1)),
+      endPage: Math.max(1, Number(c?.endPage ?? 1)),
+    }));
+  }
+  const primaryUrl = rule.entryUrls[0] || rule.entryUrl || '';
   const payload = JSON.stringify(rule);
   if (rule.id) {
     // 检查记录是否存在，存在则更新，不存在则插入（忽略传入的 id）
@@ -423,14 +641,14 @@ export async function saveCollectorRule(input: any) {
     if (existing) {
       await execute(
         'UPDATE collector_rules SET name=?, entry_url=?, enabled=?, rule_json=?, updated_at=NOW() WHERE id=?',
-        [rule.name, rule.entryUrl, rule.enabled ? 1 : 0, payload, rule.id]
+        [rule.name, primaryUrl, rule.enabled ? 1 : 0, payload, rule.id]
       );
       return queryOne('SELECT * FROM collector_rules WHERE id=?', [rule.id]);
     }
   }
   const result = await execute(
     'INSERT INTO collector_rules (name, entry_url, enabled, rule_json) VALUES (?, ?, ?, ?)',
-    [rule.name, rule.entryUrl, rule.enabled ? 1 : 0, payload]
+    [rule.name, primaryUrl, rule.enabled ? 1 : 0, payload]
   );
   return queryOne('SELECT * FROM collector_rules WHERE id=?', [result.insertId]);
 }
@@ -629,6 +847,46 @@ export function testCollectorRuleFromHtml(
   return result;
 }
 
+export interface CollectorListTestResult {
+  ok: boolean;
+  url: string;
+  htmlLength: number;
+  bookCount: number;
+  books: Array<{ name: string; author: string; bookUrl: string; coverUrl: string; latestChapterTitle: string; kind: string }>;
+  error?: string;
+}
+
+export async function testCollectorListPage(ruleId: number, listUrl: string): Promise<CollectorListTestResult> {
+  const baseRule = await getCollectorRule(ruleId);
+  const rule = normalizeCollectorRule(baseRule);
+  if (!listUrl) throw new Error('请填写列表页地址');
+  if (!rule.listRules?.bookList) throw new Error('未配置列表页规则');
+
+  let listHtml = '';
+  try {
+    listHtml = await fetchHtml(listUrl, rule);
+  } catch (error) {
+    return {
+      ok: false,
+      url: listUrl,
+      htmlLength: 0,
+      bookCount: 0,
+      books: [],
+      error: error instanceof Error ? error.message : String(error || '列表页请求失败'),
+    };
+  }
+
+  const books = extractBookListByCollectorRule(listHtml, listUrl, rule);
+  return {
+    ok: books.length > 0,
+    url: listUrl,
+    htmlLength: listHtml.length,
+    bookCount: books.length,
+    books: books.slice(0, 10),
+    error: books.length === 0 ? '未从列表页提取到任何书籍，请检查列表页规则（bookList 选择器是否匹配到节点、bookName/bookUrl 是否正确，或尝试不填写 bookUrl 让系统自动提取）' : undefined,
+  };
+}
+
 export async function testCollectorRule(
   ruleId: number,
   options: { entryUrl?: string } = {}
@@ -668,7 +926,7 @@ export async function testCollectorRule(
   );
 }
 
-async function getCollectorRuleForBook(book: any): Promise<{ id: number; rule: CollectorRulePayload } | null> {
+export async function getCollectorRuleForBook(book: any): Promise<{ id: number; rule: CollectorRulePayload } | null> {
   const originName = text(book?.origin_name || book?.originName);
   if (originName) {
     const row = await queryOne('SELECT * FROM collector_rules WHERE name=? AND enabled=1 LIMIT 1', [originName]);
@@ -686,7 +944,7 @@ async function getCollectorRuleForBook(book: any): Promise<{ id: number; rule: C
   return null;
 }
 
-async function fetchCollectorChaptersForBook(book: any, rule: CollectorRulePayload) {
+export async function fetchCollectorChaptersForBook(book: any, rule: CollectorRulePayload) {
   const entryUrl = text(book?.book_url || book?.bookUrl || rule.entryUrl);
   const runRule = buildCollectorRunRule(rule, { entryUrl });
   const detailHtml = await fetchHtml(runRule.entryUrl, runRule);
@@ -756,7 +1014,384 @@ export function resolveCollectorMaxChapters(value: unknown): number | undefined 
   if (value === undefined || value === null || value === '') return undefined;
   const raw = Number(value);
   if (!Number.isFinite(raw) || raw <= 0) return undefined;
-  return Math.min(Math.round(raw), 5000);
+  return Math.max(1, Math.round(raw));
+}
+
+export interface CollectorListItem {
+  name: string;
+  author: string;
+  bookUrl: string;
+  coverUrl: string;
+  latestChapterTitle: string;
+  kind: string;
+}
+
+export interface CollectorBatchResult {
+  totalPages: number;
+  totalBooks: number;
+  successBooks: number;
+  failedBooks: number;
+  skippedBooks: number;
+  results: Array<{
+    page: number;
+    pageUrl: string;
+    bookName: string;
+    bookUrl: string;
+    status: 'success' | 'failed' | 'skipped';
+    error?: string;
+    chapterCount?: number;
+  }>;
+}
+
+function buildPageUrl(pattern: string, page: number): string {
+  return pattern.replace(/\{page\}/g, String(page)).replace(/\[page\]/g, String(page));
+}
+
+export function extractBookListByCollectorRule(html: string, listUrl: string, inputRule: CollectorRulePayload): CollectorListItem[] {
+  const rule = normalizeCollectorRule(inputRule);
+  if (!rule.listRules?.bookList) return [];
+  const $ = cheerio.load(html);
+  const nodes = $(rule.listRules.bookList).toArray();
+  const books: CollectorListItem[] = [];
+  const seen = new Set<string>();
+
+  nodes.forEach((node) => {
+    const itemHtml = $.html(node) || '';
+    const $node = $(node);
+
+    // 优先使用 listRules 中的配置，如果没有则复用 detailRules
+    const nameSelector = rule.listRules.bookName || rule.detailRules.name;
+    const urlSelector = rule.listRules.bookUrl || rule.detailRules.tocUrl;
+    const authorSelector = rule.listRules.bookAuthor || rule.detailRules.author;
+    const coverSelector = rule.listRules.bookCover || rule.detailRules.coverUrl;
+    const latestSelector = rule.listRules.bookLatestChapter || rule.detailRules.latestChapterTitle;
+    const kindSelector = rule.listRules.bookKind || rule.detailRules.kind;
+
+    let name = nameSelector ? text(runCollectorRule(nameSelector, itemHtml, false)) : '';
+    let url = urlSelector ? absolutize(text(runCollectorRule(urlSelector, itemHtml, false)), listUrl) : '';
+
+    // 自动回退：从节点本身或其子 <a> 标签中提取书名和链接
+    const tagName = $node.prop('tagName')?.toLowerCase() || '';
+    const $a = tagName === 'a' ? $node : $node.find('a').first();
+
+    if (!name && $a.length) {
+      name = $a.text().trim();
+    }
+    if (!url && $a.length) {
+      const href = $a.attr('href');
+      if (href) url = absolutize(href, listUrl);
+    }
+
+    if (!name || !url || seen.has(url)) return;
+    seen.add(url);
+    const author = authorSelector ? text(runCollectorRule(authorSelector, itemHtml, false)) : '';
+    const coverUrl = coverSelector ? absolutize(text(runCollectorRule(coverSelector, itemHtml, false)), listUrl) : '';
+    const latestChapterTitle = latestSelector ? text(runCollectorRule(latestSelector, itemHtml, false)) : '';
+    const kind = kindSelector ? text(runCollectorRule(kindSelector, itemHtml, false)) : '';
+    books.push({ name, author, bookUrl: url, coverUrl, latestChapterTitle, kind });
+  });
+  return books;
+}
+
+export interface CollectorBatchProgress {
+  type: 'progress' | 'book' | 'done' | 'error';
+  totalPages?: number;
+  currentPage?: number;
+  totalBooks?: number;
+  successBooks?: number;
+  failedBooks?: number;
+  skippedBooks?: number;
+  maxBooks?: number;
+  bookName?: string;
+  bookUrl?: string;
+  bookStatus?: 'success' | 'failed' | 'skipped' | 'collecting';
+  chapterCount?: number;
+  error?: string;
+}
+
+export async function runBatchCollector(
+  ruleId: number,
+  options: { maxBooks?: number; startPage?: number; maxPages?: number; includeContent?: boolean; maxChapters?: number; resume?: boolean; entryUrlConfigs?: Array<{ startPage: number; endPage: number }> } = {},
+  onProgress?: (progress: CollectorBatchProgress) => void
+): Promise<CollectorBatchResult> {
+  const baseRule = await getCollectorRule(ruleId);
+  const rule = normalizeCollectorRule(baseRule);
+  if (!rule.listRules || !rule.pagination) throw new Error('该规则未配置列表页规则或分页规则，无法进行批量采集');
+
+  // 允许运行时通过 options 覆盖 entryUrlConfigs
+  if (options.entryUrlConfigs && Array.isArray(options.entryUrlConfigs)) {
+    rule.entryUrlConfigs = options.entryUrlConfigs.map((c: any) => ({
+      startPage: Math.max(1, Number(c.startPage ?? 1)),
+      endPage: Math.max(1, Number(c.endPage ?? 1)),
+    }));
+  }
+
+  const result: CollectorBatchResult = {
+    totalPages: 0,
+    totalBooks: 0,
+    successBooks: 0,
+    failedBooks: 0,
+    skippedBooks: 0,
+    results: [],
+  };
+
+  const maxBooks = options.maxBooks ? Math.max(1, Math.round(Number(options.maxBooks))) : undefined;
+  const seenUrls = new Set<string>();
+
+  // 确定要处理的 entryUrls
+  const entryUrls = (rule.entryUrls && rule.entryUrls.length > 0 && rule.entryUrls[0])
+    ? rule.entryUrls
+    : [rule.entryUrl];
+
+  async function updateLastProgress(urlIndex: number, currentPage: number) {
+    const rawRow = await queryOne('SELECT last_progress FROM collector_rules WHERE id=?', [ruleId]);
+    let progress: any = {};
+    try {
+      if (rawRow?.last_progress) {
+        progress = JSON.parse(rawRow.last_progress);
+      }
+    } catch {
+      progress = {};
+    }
+    if (!progress.perUrl || !Array.isArray(progress.perUrl)) {
+      progress = { perUrl: [] };
+    }
+    const url = entryUrls[urlIndex];
+    const existing = progress.perUrl.find((p: any) => p.url === url);
+    if (existing) {
+      existing.page = currentPage;
+      existing.seenUrls = Array.from(seenUrls);
+    } else {
+      progress.perUrl.push({ url, page: currentPage, seenUrls: Array.from(seenUrls) });
+    }
+    await execute(
+      'UPDATE collector_rules SET last_progress=? WHERE id=?',
+      [JSON.stringify(progress), ruleId]
+    );
+  }
+
+  async function clearLastProgress() {
+    await execute('UPDATE collector_rules SET last_progress=NULL WHERE id=?', [ruleId]);
+  }
+
+  // 断点续采：检查是否有上次进度
+  let perUrlProgress: Array<{ url: string; page: number; seenUrls: string[] }> = [];
+  if (options.resume) {
+    const rawRow = await queryOne('SELECT last_progress FROM collector_rules WHERE id=?', [ruleId]);
+    if (rawRow?.last_progress) {
+      try {
+        const progress = JSON.parse(rawRow.last_progress);
+        if (Array.isArray(progress.perUrl)) {
+          perUrlProgress = progress.perUrl;
+        } else if (progress.page && typeof progress.page === 'number') {
+          // 兼容旧格式：仅对第一个 entryUrl 生效
+          perUrlProgress = [{ url: entryUrls[0], page: progress.page, seenUrls: progress.seenUrls || [] }];
+        }
+        // 恢复全局 seenUrls
+        for (const p of perUrlProgress) {
+          if (Array.isArray(p.seenUrls)) {
+            for (const url of p.seenUrls) seenUrls.add(url);
+          }
+        }
+      } catch {
+        // 忽略解析错误
+      }
+    }
+  }
+
+  for (let urlIndex = 0; urlIndex < entryUrls.length; urlIndex++) {
+    if (result.totalBooks >= maxBooks) break;
+
+    const entryUrl = entryUrls[urlIndex];
+    const hasPagePlaceholder = /\[page\]|\{page\}/.test(entryUrl);
+
+    const urlConfig = rule.entryUrlConfigs?.[urlIndex];
+    let startPage = options.startPage ?? urlConfig?.startPage ?? rule.pagination.startPage;
+    const urlMaxPages = urlConfig?.endPage
+      ? Math.max(1, urlConfig.endPage - startPage + 1)
+      : (options.maxPages ?? rule.pagination.maxPages);
+
+    // 断点续采：恢复该网址的进度
+    if (options.resume) {
+      const saved = perUrlProgress.find(p => p.url === entryUrl);
+      if (saved?.page && typeof saved.page === 'number') {
+        startPage = saved.page;
+        onProgress?.({ type: 'progress', totalPages: result.totalPages, currentPage: startPage, totalBooks: result.totalBooks, successBooks: result.successBooks, failedBooks: result.failedBooks, skippedBooks: result.skippedBooks, maxBooks });
+      }
+    }
+
+    if (hasPagePlaceholder) {
+      const pattern = entryUrl;
+
+      for (let pageIndex = 0; pageIndex < urlMaxPages; pageIndex++) {
+        const page = startPage + pageIndex * rule.pagination.increment;
+        const pageUrl = buildPageUrl(pattern, page);
+
+        let listHtml: string;
+        try {
+          listHtml = await fetchHtml(pageUrl, rule);
+        } catch (error) {
+          result.results.push({
+            page, pageUrl, bookName: '', bookUrl: '', status: 'failed',
+            error: `列表页请求失败: ${error instanceof Error ? error.message : String(error)}`,
+          });
+          break;
+        }
+
+        const books = extractBookListByCollectorRule(listHtml, pageUrl, rule);
+        if (books.length === 0) break;
+
+        result.totalPages++;
+        onProgress?.({ type: 'progress', totalPages: result.totalPages, currentPage: page, totalBooks: result.totalBooks, successBooks: result.successBooks, failedBooks: result.failedBooks, skippedBooks: result.skippedBooks, maxBooks });
+
+        for (const bookItem of books) {
+          if (result.totalBooks >= maxBooks) break;
+
+          // 跨页 URL 去重
+          if (seenUrls.has(bookItem.bookUrl)) continue;
+          seenUrls.add(bookItem.bookUrl);
+
+          result.totalBooks++;
+
+          // 检查数据库是否已存在且章节未更新
+          const existing = await queryOne('SELECT total_chapter_num, latest_chapter_title FROM books WHERE book_url=?', [bookItem.bookUrl]);
+          if (existing && text(existing.latest_chapter_title) === bookItem.latestChapterTitle && Number(existing.total_chapter_num) > 0) {
+            result.skippedBooks++;
+            result.results.push({ page, pageUrl, bookName: bookItem.name, bookUrl: bookItem.bookUrl, status: 'skipped' });
+            onProgress?.({ type: 'book', totalBooks: result.totalBooks, successBooks: result.successBooks, failedBooks: result.failedBooks, skippedBooks: result.skippedBooks, maxBooks, bookName: bookItem.name, bookUrl: bookItem.bookUrl, bookStatus: 'skipped' });
+            continue;
+          }
+
+          onProgress?.({ type: 'book', totalBooks: result.totalBooks, successBooks: result.successBooks, failedBooks: result.failedBooks, skippedBooks: result.skippedBooks, maxBooks, bookName: bookItem.name, bookUrl: bookItem.bookUrl, bookStatus: 'collecting' });
+
+          try {
+            const runRule = buildCollectorRunRule(rule, { entryUrl: bookItem.bookUrl });
+            const detailHtml = await fetchHtml(runRule.entryUrl, runRule);
+            const book = extractBookByCollectorRule(detailHtml, runRule.entryUrl, runRule);
+            const tocHtml = book.tocUrl === runRule.entryUrl ? detailHtml : await fetchHtml(book.tocUrl, runRule);
+            const maxChapters = resolveCollectorMaxChapters(options.maxChapters);
+            const chapters = extractChaptersByCollectorRule(tocHtml, book.tocUrl, runRule).slice(0, maxChapters || undefined);
+
+            if (options.includeContent && runRule.contentRule) {
+              for (const chapter of chapters) {
+                try {
+                  chapter.content = extractContentByCollectorRule(await fetchHtml(chapter.url, runRule), runRule);
+                } catch {
+                  chapter.content = '';
+                }
+              }
+            }
+
+            await importCollectedBook(book, chapters);
+            result.successBooks++;
+            result.results.push({ page, pageUrl, bookName: book.name, bookUrl: book.bookUrl, status: 'success', chapterCount: chapters.length });
+            onProgress?.({ type: 'book', totalBooks: result.totalBooks, successBooks: result.successBooks, failedBooks: result.failedBooks, skippedBooks: result.skippedBooks, maxBooks, bookName: book.name, bookUrl: book.bookUrl, bookStatus: 'success', chapterCount: chapters.length });
+          } catch (error) {
+            result.failedBooks++;
+            result.results.push({
+              page, pageUrl, bookName: bookItem.name, bookUrl: bookItem.bookUrl, status: 'failed',
+              error: error instanceof Error ? error.message : String(error),
+            });
+            onProgress?.({ type: 'book', totalBooks: result.totalBooks, successBooks: result.successBooks, failedBooks: result.failedBooks, skippedBooks: result.skippedBooks, maxBooks, bookName: bookItem.name, bookUrl: bookItem.bookUrl, bookStatus: 'failed', error: error instanceof Error ? error.message : String(error) });
+          }
+
+          // 每本书之间延迟 5-10 秒，避免触发 Cloudflare
+          const bookDelay = 5000 + Math.floor(Math.random() * 5000);
+          await new Promise(r => setTimeout(r, bookDelay));
+        }
+
+        // 每页处理完后更新断点进度
+        await updateLastProgress(urlIndex, page + rule.pagination.increment);
+
+        if (result.totalBooks >= maxBooks) break;
+        // 每页之间延迟 5-10 秒
+        const pageDelay = 5000 + Math.floor(Math.random() * 5000);
+        await new Promise(r => setTimeout(r, pageDelay));
+      }
+    } else {
+      // 无分页占位符，只采集单页
+      let listHtml: string;
+      try {
+        listHtml = await fetchHtml(entryUrl, rule);
+      } catch (error) {
+        result.results.push({
+          page: 1, pageUrl: entryUrl, bookName: '', bookUrl: '', status: 'failed',
+          error: `列表页请求失败: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        continue;
+      }
+
+      const books = extractBookListByCollectorRule(listHtml, entryUrl, rule);
+      if (books.length === 0) continue;
+
+      result.totalPages++;
+      onProgress?.({ type: 'progress', totalPages: result.totalPages, currentPage: 1, totalBooks: result.totalBooks, successBooks: result.successBooks, failedBooks: result.failedBooks, skippedBooks: result.skippedBooks, maxBooks });
+
+      for (const bookItem of books) {
+        if (result.totalBooks >= maxBooks) break;
+
+        if (seenUrls.has(bookItem.bookUrl)) continue;
+        seenUrls.add(bookItem.bookUrl);
+
+        result.totalBooks++;
+
+        const existing = await queryOne('SELECT total_chapter_num, latest_chapter_title FROM books WHERE book_url=?', [bookItem.bookUrl]);
+        if (existing && text(existing.latest_chapter_title) === bookItem.latestChapterTitle && Number(existing.total_chapter_num) > 0) {
+          result.skippedBooks++;
+          result.results.push({ page: 1, pageUrl: entryUrl, bookName: bookItem.name, bookUrl: bookItem.bookUrl, status: 'skipped' });
+          onProgress?.({ type: 'book', totalBooks: result.totalBooks, successBooks: result.successBooks, failedBooks: result.failedBooks, skippedBooks: result.skippedBooks, maxBooks, bookName: bookItem.name, bookUrl: bookItem.bookUrl, bookStatus: 'skipped' });
+          continue;
+        }
+
+        onProgress?.({ type: 'book', totalBooks: result.totalBooks, successBooks: result.successBooks, failedBooks: result.failedBooks, skippedBooks: result.skippedBooks, maxBooks, bookName: bookItem.name, bookUrl: bookItem.bookUrl, bookStatus: 'collecting' });
+
+        try {
+          const runRule = buildCollectorRunRule(rule, { entryUrl: bookItem.bookUrl });
+          const detailHtml = await fetchHtml(runRule.entryUrl, runRule);
+          const book = extractBookByCollectorRule(detailHtml, runRule.entryUrl, runRule);
+          const tocHtml = book.tocUrl === runRule.entryUrl ? detailHtml : await fetchHtml(book.tocUrl, runRule);
+          const maxChapters = resolveCollectorMaxChapters(options.maxChapters);
+          const chapters = extractChaptersByCollectorRule(tocHtml, book.tocUrl, runRule).slice(0, maxChapters || undefined);
+
+          if (options.includeContent && runRule.contentRule) {
+            for (const chapter of chapters) {
+              try {
+                chapter.content = extractContentByCollectorRule(await fetchHtml(chapter.url, runRule), runRule);
+              } catch {
+                chapter.content = '';
+              }
+            }
+          }
+
+          await importCollectedBook(book, chapters);
+          result.successBooks++;
+          result.results.push({ page: 1, pageUrl: entryUrl, bookName: book.name, bookUrl: book.bookUrl, status: 'success', chapterCount: chapters.length });
+          onProgress?.({ type: 'book', totalBooks: result.totalBooks, successBooks: result.successBooks, failedBooks: result.failedBooks, skippedBooks: result.skippedBooks, maxBooks, bookName: book.name, bookUrl: book.bookUrl, bookStatus: 'success', chapterCount: chapters.length });
+        } catch (error) {
+          result.failedBooks++;
+          result.results.push({
+            page: 1, pageUrl: entryUrl, bookName: bookItem.name, bookUrl: bookItem.bookUrl, status: 'failed',
+            error: error instanceof Error ? error.message : String(error),
+          });
+          onProgress?.({ type: 'book', totalBooks: result.totalBooks, successBooks: result.successBooks, failedBooks: result.failedBooks, skippedBooks: result.skippedBooks, maxBooks, bookName: bookItem.name, bookUrl: bookItem.bookUrl, bookStatus: 'failed', error: error instanceof Error ? error.message : String(error) });
+        }
+
+        // 每本书之间延迟 5-10 秒
+        const bookDelay2 = 5000 + Math.floor(Math.random() * 5000);
+        await new Promise(r => setTimeout(r, bookDelay2));
+      }
+    }
+  }
+
+  // 采集完成后清除断点进度
+  await clearLastProgress();
+
+  await execute(
+    'INSERT INTO collector_logs (rule_id, status, message, book_name, chapter_count, content_count) VALUES (?, ?, ?, ?, ?, ?)',
+    [ruleId, 'success', `批量采集完成: 共${result.totalPages}页, ${result.totalBooks}本, 成功${result.successBooks}, 失败${result.failedBooks}, 跳过${result.skippedBooks}`, '', result.totalBooks, result.successBooks]
+  );
+
+  return result;
 }
 
 export async function runSingleBookCollector(ruleId: number, options: CollectorRunOptions = {}): Promise<CollectorRunResult> {
@@ -786,15 +1421,70 @@ export async function runSingleBookCollector(ruleId: number, options: CollectorR
   return { book, chapters, imported: true, chapterCount: chapters.length, contentCount };
 }
 
+export async function getCollectorSchedule(ruleId: number) {
+  const row = await queryOne('SELECT * FROM collector_schedules WHERE rule_id=?', [ruleId]);
+  if (!row) return null;
+  return {
+    id: row.id,
+    ruleId: row.rule_id,
+    cron: row.cron,
+    maxBooks: row.max_books,
+    maxPages: row.max_pages,
+    enabled: !!row.enabled,
+    lastRunAt: row.last_run_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function saveCollectorSchedule(input: any) {
+  const ruleId = Number(input.ruleId);
+  const cron = String(input.cron || '').trim();
+  const maxBooks = Number(input.maxBooks ?? 50);
+  const maxPages = Number(input.maxPages ?? 10);
+  const enabled = input.enabled !== false ? 1 : 0;
+  if (!ruleId) throw new Error('规则ID不能为空');
+  if (!cron) throw new Error('Cron表达式不能为空');
+  const existing = await queryOne('SELECT id FROM collector_schedules WHERE rule_id=?', [ruleId]);
+  if (existing) {
+    await execute(
+      'UPDATE collector_schedules SET cron=?, max_books=?, max_pages=?, enabled=?, updated_at=NOW() WHERE id=?',
+      [cron, maxBooks, maxPages, enabled, existing.id]
+    );
+    const row = await queryOne('SELECT * FROM collector_schedules WHERE id=?', [existing.id]);
+    // 立即刷新调度器
+    try { await refreshSchedulesNow(); } catch {}
+    return row;
+  }
+  const result = await execute(
+    'INSERT INTO collector_schedules (rule_id, cron, max_books, max_pages, enabled) VALUES (?, ?, ?, ?, ?)',
+    [ruleId, cron, maxBooks, maxPages, enabled]
+  );
+  const row = await queryOne('SELECT * FROM collector_schedules WHERE id=?', [result.insertId]);
+  // 立即刷新调度器
+  try { await refreshSchedulesNow(); } catch {}
+  return row;
+}
+
+export async function deleteCollectorSchedule(id: number) {
+  await execute('DELETE FROM collector_schedules WHERE id=?', [id]);
+  // 立即刷新调度器
+  try { await refreshSchedulesNow(); } catch {}
+}
+
+export async function listCollectorSchedules() {
+  return query('SELECT * FROM collector_schedules WHERE enabled=1');
+}
+
 export async function importCollectedBook(book: CollectorBookDraft, chapters: CollectorChapterDraft[]) {
   await transaction(async (conn) => {
     await conn.execute(
       `INSERT INTO books
-        (book_url, toc_url, origin, origin_name, name, author, kind, cover_url, intro, total_chapter_num, latest_chapter_title)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (book_url, toc_url, origin, origin_name, name, author, kind, cover_url, intro, total_chapter_num, latest_chapter_title, type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
        ON DUPLICATE KEY UPDATE toc_url=VALUES(toc_url), origin=VALUES(origin), origin_name=VALUES(origin_name),
          name=VALUES(name), author=VALUES(author), kind=VALUES(kind), cover_url=VALUES(cover_url), intro=VALUES(intro),
-         total_chapter_num=VALUES(total_chapter_num), latest_chapter_title=VALUES(latest_chapter_title), updated_at=NOW()`,
+         total_chapter_num=VALUES(total_chapter_num), latest_chapter_title=VALUES(latest_chapter_title), type=1, updated_at=NOW()`,
       [book.bookUrl, book.tocUrl, book.origin, book.originName, book.name, book.author, book.kind, book.coverUrl, book.intro, chapters.length, book.latestChapterTitle || chapters.at(-1)?.title || '']
     );
     for (const chapter of chapters) {

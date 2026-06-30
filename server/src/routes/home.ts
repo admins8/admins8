@@ -5,7 +5,7 @@ import {
   getHotTags, getAllHotTags, addHotTag, updateHotTag, deleteHotTag,
   getRankingMeta, getRankingsGrouped, getLocalLibrary, refreshRankings,
 } from '../controllers/homeController';
-import { authMiddleware, adminMiddleware } from '../middleware/auth';
+import { authMiddleware, adminMiddleware, testReadonlyMiddleware } from '../middleware/auth';
 
 const router = Router();
 
@@ -20,17 +20,19 @@ router.get('/library', getLocalLibrary);
 // 管理接口（需要管理员权限）
 router.use(authMiddleware, adminMiddleware);
 router.get('/searches/all', getAllHotSearches);
-router.post('/searches', addHotSearch);
-router.put('/searches', updateHotSearch);
-router.post('/searches/delete', deleteHotSearch);
+router.post('/searches', testReadonlyMiddleware, addHotSearch);
+router.put('/searches', testReadonlyMiddleware, updateHotSearch);
+router.post('/searches/delete', testReadonlyMiddleware, deleteHotSearch);
 
 router.get('/rankings/all', getAllHotRankings);
-router.post('/rankings', addHotRanking);
-router.put('/rankings', updateHotRanking);
-router.post('/rankings/delete', deleteHotRanking);
-router.post('/rankings/refresh', refreshRankings);
+router.post('/rankings', testReadonlyMiddleware, addHotRanking);
+router.put('/rankings', testReadonlyMiddleware, updateHotRanking);
+router.post('/rankings/delete', testReadonlyMiddleware, deleteHotRanking);
+router.post('/rankings/refresh', testReadonlyMiddleware, refreshRankings);
 
 router.get('/tags/all', getAllHotTags);
-router.post('/tags', addHotTag);
-router.put('/tags', updateHotTag);
-router.post('/tags/delete', delet
+router.post('/tags', testReadonlyMiddleware, addHotTag);
+router.put('/tags', testReadonlyMiddleware, updateHotTag);
+router.post('/tags/delete', testReadonlyMiddleware, deleteHotTag);
+
+export default router;

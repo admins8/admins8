@@ -26,6 +26,10 @@ export async function listContentPages() {
   return query('SELECT * FROM content_pages ORDER BY sort_order ASC, id ASC');
 }
 
+export async function listPublicContentPages() {
+  return query('SELECT slug, title FROM content_pages WHERE is_active = 1 ORDER BY sort_order ASC, id ASC');
+}
+
 export async function getAdminContentPage(slug: string) {
   return queryOne('SELECT * FROM content_pages WHERE slug = ? LIMIT 1', [slug]);
 }

@@ -1,8 +1,20 @@
+/**
+ * 书源类型枚举
+ * 对应 Legado 的 BookSourceType
+ */
+export enum BookSourceType {
+  TEXT = 0,    // 文本小说
+  AUDIO = 1,   // 有声小说
+  IMAGE = 2,   // 漫画/图片
+  FILE = 3,    // 文件下载
+}
+
 export interface BookSourceRow {
   id?: number;
   book_source_url: string;
   book_source_name: string;
   book_source_group?: string | null;
+  book_source_type?: number;  // BookSourceType
   enabled?: number | boolean;
   header?: string | null;
   search_url?: string | null;

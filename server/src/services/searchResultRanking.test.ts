@@ -79,4 +79,30 @@ test('聚合键会忽略作者标点，避免本地缓存和远程聚合重复�
 
 test('同等匹配时本地已缓存结果强制排在第一位', () => {
   const ranked = rankSearchResults('仙工开物', [
-    { name: '仙工开物', author: '蛊真人', sourc
+    { name: '仙工开物', author: '蛊真人', sourceName: '远程源', _matchScore: 900, _readable: true, _tocVerified: true },
+    { name: '仙工开物', author: '点击次数：554', sourceName: '本地书库', _matchScore: 900, _local: true },
+  ]);
+
+  assert.equal((ranked[0] as any)._local, true);
+});
+
+test('普通搜索允许立即返回同名未验证结果，避免扫完整个书源列表才显示结果', () => {
+  assert.equal(
+    shouldEmitImmediateSearchResult({ _matchLevel: 'exact', _readable: false }, { forceVerifyToc: false }),
+    true
+  );
+});
+
+test('强制目录验证时未验证结果不立即返回', () => {
+  assert.equal(
+    shouldEmitImmediateSearchResult({ _matchLevel: 'exact', _readable: false }, { forceVerifyToc: true }),
+    false
+  );
+});
+
+test('强制目录验证时目录已验证结果可立即返回，即使正文未验证', () => {
+  assert.equal(
+    shouldEmitImmediateSearchResult({ _matchLevel: 'exact', _tocVerified: true, _contentVerified: false }, { forceVerifyToc: true }),
+    true
+  );
+});

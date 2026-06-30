@@ -158,7 +158,16 @@ export async function uploadPackage(req: Request, res: Response) {
   }
 
   try {
-    const pem = fs.readFileSync(config.update.publicKeyPath, 'utf-8');
+    let publicKeyPath = config.update.publicKeyPath;
+    const fallbackPublicKeyPath = path.resolve(process.cwd(), 'data', 'updates', 'public.pem');
+    if (!fs.existsSync(publicKeyPath)) {
+      if (fs.existsSync(fallbackPublicKeyPath)) {
+        publicKeyPath = fallbackPublicKeyPath;
+      } else {
+        throw new Error(`未找到公钥：${publicKeyPath}`);
+      }
+    }
+    const pem = fs.readFileSync(publicKeyPath, 'utf-8');
     if (!verifyFileSignature(zipFile.path, sigB64, pem)) {
       return res.status(400).json({ code: 1, message: '升级包签名校验失败' });
     }
@@ -234,4 +243,6 @@ export async function rollback(req: Request, res: Response) {
   if (result.success) {
     res.json({ code: 0, data: result });
   } else {
-    res.status(500).json({ code: 1, message: result.error, data: result 
+    res.status(500).json({ code: 1, message: result.error, data: result });
+  }
+}

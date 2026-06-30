@@ -37,14 +37,22 @@ export async function sortSourcesByHealth<T extends Record<string, any>>(
         .sort((a, b) => b.score - a.score || a.index - b.index)
         .map(item => item.source)
     }
-    const scored = await Promise.all(sources.map(async (source, index) => {
-      const record = await redis.hGetAll(healthKey(sourceUrlOf(source)))
+    // 使用 pipeline 批量查询所有书源健康度
+    const keys = sources.map(s => healthKey(sourceUrlOf(s)))
+    const pipeline = redis.pipeline()
+    for (const key of keys) {
+      pipeline.hGetAll(key)
+    }
+    const results = await pipeline.exec()
+
+    const scored = sources.map((source, index) => {
+      const record = results?.[index]?.[1] || null
       return {
         source,
         index,
         score: baseOrderScore(source) - healthPenalty(record || {}),
       }
-    }))
+    })
     return scored
       .sort((a, b) => b.score - a.score || a.index - b.index)
       .map(item => item.source)

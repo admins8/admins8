@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import {
+  autoFillChannel,
+  autoFillSection,
   createItem,
   createSection,
   deleteItem,
@@ -15,6 +17,7 @@ import {
   getAdminContentPage,
   getPublicContentPage,
   listContentPages,
+  listPublicContentPages,
   updateContentPage,
 } from '../services/contentPageService';
 import {
@@ -68,6 +71,26 @@ export async function updateChannelHandler(req: Request, res: Response) {
 export async function seedChannelHandler(req: Request, res: Response) {
   try {
     ok(res, await seedChannel(paramString(req.params.code)), '频道已初始化');
+  } catch (e) {
+    fail(res, 500, e);
+  }
+}
+
+export async function autoFillSectionHandler(req: Request, res: Response) {
+  try {
+    const replace = req.body?.replace !== false;
+    const result = await autoFillSection(Number(req.params.id), replace);
+    ok(res, result, `已拉取 ${result.filled} 本书籍到该区块`);
+  } catch (e) {
+    fail(res, 500, e);
+  }
+}
+
+export async function autoFillChannelHandler(req: Request, res: Response) {
+  try {
+    const result = await autoFillChannel(paramString(req.params.code));
+    const total = Object.values(result).reduce((a: number, b: any) => a + b, 0);
+    ok(res, result, `已一键拉取 ${total} 本书籍到各区块`);
   } catch (e) {
     fail(res, 500, e);
   }
@@ -134,6 +157,14 @@ export async function getPublicContentPageHandler(req: Request, res: Response) {
 export async function listContentPagesHandler(_req: Request, res: Response) {
   try {
     ok(res, await listContentPages());
+  } catch (e) {
+    fail(res, 500, e);
+  }
+}
+
+export async function listPublicContentPagesHandler(_req: Request, res: Response) {
+  try {
+    ok(res, await listPublicContentPages());
   } catch (e) {
     fail(res, 500, e);
   }

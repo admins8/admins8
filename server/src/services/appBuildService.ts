@@ -3,6 +3,7 @@ import fs from 'fs';
 import https from 'https';
 import http from 'http';
 import { query } from '../config/database';
+import { getAppConfig } from './appConfigService';
 
 function toMySQLDateTime(date: Date = new Date()): string {
   return date.toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
@@ -24,15 +25,39 @@ export interface BuildTask {
 const PROJECT_ROOT = path.resolve(__dirname, '../../../..');
 const UPLOADS_DIR = path.join(PROJECT_ROOT, 'server', 'data', 'uploads', 'app');
 
-// GitHub Actions 配置
-function getGitHubConfig() {
-  const token = process.env.GITHUB_TOKEN || '';
-  const owner = process.env.GITHUB_OWNER || '';
-  const repo = process.env.GITHUB_REPO || '';
-  const callbackSecret = process.env.BUILD_CALLBACK_SECRET || 'legado-build-secret';
-  const serverUrl = process.env.BUILD_CALLBACK_URL || '';
+// GitHub Actions 配置：优先从数据库读取，回退到 .env
+async function getGitHubConfig() {
+  // 优先从数据库读取
+  const dbConfig = await getAppConfig();
+  const dbToken = dbConfig?.github_token;
+  const dbOwner = dbConfig?.github_owner;
+  const dbRepo = dbConfig?.github_repo;
+  const dbCallbackSecret = dbConfig?.build_callback_secret;
+  const dbServerUrl = process.env.SITE_URL || process.env.BUILD_CALLBACK_URL || '';
 
-  return { token, owner, repo, callbackSecret, serverUrl };
+  // 如果数据库有完整配置，使用数据库的
+  if (dbToken && dbOwner && dbRepo) {
+    return {
+      token: dbToken,
+      owner: dbOwner,
+      repo: dbRepo,
+      workflow: dbConfig?.github_workflow || 'build-android.yml',
+      branch: dbConfig?.github_branch || 'main',
+      callbackSecret: dbCallbackSecret || process.env.BUILD_CALLBACK_SECRET || 'legado-build-secret',
+      serverUrl: dbServerUrl,
+    };
+  }
+
+  // 回退到 .env
+  return {
+    token: process.env.GITHUB_TOKEN || '',
+    owner: process.env.GITHUB_OWNER || '',
+    repo: process.env.GITHUB_REPO || '',
+    workflow: 'build-android.yml',
+    branch: process.env.GITHUB_BRANCH || 'main',
+    callbackSecret: process.env.BUILD_CALLBACK_SECRET || 'legado-build-secret',
+    serverUrl: process.env.BUILD_CALLBACK_URL || '',
+  };
 }
 
 export async function createBuildTask(platform: 'android' | 'harmony', versionName: string, versionCode: number): Promise<number> {
@@ -65,7 +90,18 @@ export async function updateBuildTask(id: number, data: Partial<BuildTask>): Pro
 }
 
 export async function listBuildTasks(): Promise<BuildTask[]> {
-  return query('SELECT * FROM app_build_tasks ORDER BY created_at DESC LIMIT 50') as BuildTask[];
+  // 自动将超时（超过30分钟）的 building 任务标记为 failed
+  await query(
+    `UPDATE app_build_tasks
+     SET status = 'failed', build_log = CONCAT(IFNULL(build_log, ''), '\n[系统] 构建超时，自动标记为失败'),
+         completed_at = ?
+     WHERE status = 'building'
+       AND (run_id IS NULL OR run_id = 0)
+       AND created_at < DATE_SUB(NOW(), INTERVAL 30 MINUTE)`,
+    [toMySQLDateTime()]
+  );
+
+  return (await query('SELECT * FROM app_build_tasks ORDER BY created_at DESC LIMIT 50')) as unknown as BuildTask[];
 }
 
 /**
@@ -76,9 +112,9 @@ export async function triggerGitHubActionsBuild(
   versionName: string,
   versionCode: number
 ): Promise<{ run_id?: number; error?: string }> {
-  const { token, owner, repo, callbackSecret, serverUrl } = getGitHubConfig();
+  const config = await getGitHubConfig();
 
-  if (!token || !owner || !repo) {
+  if (!config.token || !config.owner || !config.repo) {
     return { error: 'GitHub Actions 未配置，请在 .env 中设置 GITHUB_TOKEN、GITHUB_OWNER、GITHUB_REPO' };
   }
 
@@ -86,16 +122,16 @@ export async function triggerGitHubActionsBuild(
     task_id: String(taskId),
     version_name: versionName,
     version_code: String(versionCode),
-    callback_secret: callbackSecret,
+    callback_secret: config.callbackSecret,
   };
 
   // 只有配置了回调 URL 才传递
-  if (serverUrl) {
-    inputs.callback_url = `${serverUrl}/api/app/build-callback`;
+  if (config.serverUrl) {
+    inputs.callback_url = `${config.serverUrl}/api/app/build-callback`;
   }
 
   const body = JSON.stringify({
-    ref: 'main',
+    ref: config.branch || 'main',
     inputs,
   });
 
@@ -103,10 +139,10 @@ export async function triggerGitHubActionsBuild(
     const options = {
       hostname: 'api.github.com',
       port: 443,
-      path: `/repos/${owner}/${repo}/actions/workflows/build-android.yml/dispatches`,
+      path: `/repos/${config.owner}/${config.repo}/actions/workflows/${config.workflow || 'build-android.yml'}/dispatches`,
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${token}`,
+        'Authorization': `Bearer ${config.token}`,
         'Accept': 'application/vnd.github.v3+json',
         'User-Agent': 'legado-build-server',
         'Content-Type': 'application/json',
@@ -188,9 +224,9 @@ export async function handleBuildCallback(data: {
  * 从 GitHub Actions 下载 APK artifact
  */
 async function downloadApkFromArtifact(taskId: number, runId: number): Promise<string | null> {
-  const { token, owner, repo } = getGitHubConfig();
+  const config = await getGitHubConfig();
 
-  if (!token || !owner || !repo || !runId) return null;
+  if (!config.token || !config.owner || !config.repo || !runId) return null;
 
   if (!fs.existsSync(UPLOADS_DIR)) {
     fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -201,10 +237,10 @@ async function downloadApkFromArtifact(taskId: number, runId: number): Promise<s
     const options = {
       hostname: 'api.github.com',
       port: 443,
-      path: `/repos/${owner}/${repo}/actions/runs/${runId}/artifacts`,
+      path: `/repos/${config.owner}/${config.repo}/actions/runs/${runId}/artifacts`,
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${token}`,
+        'Authorization': `Bearer ${config.token}`,
         'Accept': 'application/vnd.github.v3+json',
         'User-Agent': 'legado-build-server',
       },
@@ -221,7 +257,7 @@ async function downloadApkFromArtifact(taskId: number, runId: number): Promise<s
           );
           if (artifact?.archive_download_url) {
             // 下载 artifact zip 并解压获取 APK
-            downloadFile(artifact.archive_download_url, token)
+            downloadFile(artifact.archive_download_url, config.token)
               .then(() => {
                 const apkName = `soumal-reader-v${artifact.id}.apk`;
                 const apkPath = path.join(UPLOADS_DIR, apkName);
@@ -277,9 +313,9 @@ export async function getGitHubRunStatus(runId: number): Promise<{
   conclusion: string | null;
   html_url: string;
 }> {
-  const { token, owner, repo } = getGitHubConfig();
+  const config = await getGitHubConfig();
 
-  if (!token || !owner || !repo) {
+  if (!config.token || !config.owner || !config.repo) {
     return { status: 'unknown', conclusion: null, html_url: '' };
   }
 
@@ -287,10 +323,10 @@ export async function getGitHubRunStatus(runId: number): Promise<{
     const options = {
       hostname: 'api.github.com',
       port: 443,
-      path: `/repos/${owner}/${repo}/actions/runs/${runId}`,
+      path: `/repos/${config.owner}/${config.repo}/actions/runs/${runId}`,
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${token}`,
+        'Authorization': `Bearer ${config.token}`,
         'Accept': 'application/vnd.github.v3+json',
         'User-Agent': 'legado-build-server',
       },

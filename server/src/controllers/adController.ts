@@ -1,10 +1,32 @@
 import { Request, Response } from 'express';
-import { query, execute } from '../config/database';
+import jwt from 'jsonwebtoken';
+import { query, execute, queryOne } from '../config/database';
+import { config } from '../config';
 import {
   DEFAULT_POPUP_AUTO_CLOSE_SECONDS,
   DEFAULT_POPUP_INTERVAL_SECONDS,
   normalizePopupSeconds,
 } from '../utils/adDefaults';
+
+/** 检查请求用户是否为有效会员 */
+async function checkIsMember(req: Request): Promise<boolean> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return false;
+  const token = authHeader.substring(7);
+  try {
+    const decoded = jwt.verify(token, config.jwt.secret) as any;
+    if (!decoded || !decoded.userId) return false;
+    if (decoded.role === 'admin' || decoded.role === 'superadmin') return true;
+    const user = await queryOne(
+      'SELECT membership_type, membership_expire_at FROM users WHERE id = ?',
+      [decoded.userId]
+    );
+    if (!user) return false;
+    return user.membership_type !== 'free' && user.membership_expire_at && new Date(user.membership_expire_at) > new Date();
+  } catch {
+    return false;
+  }
+}
 
 /**
  * 广告位约定：
@@ -19,12 +41,18 @@ import {
 
 // ========== 公开接口（前台展示用） ==========
 
-/** 按位置获取启用中的广告（已过滤生效时间） */
+/** 按位置获取启用中的广告（已过滤生效时间，会员免广告） */
 export async function getAdsByPosition(req: Request, res: Response): Promise<void> {
   try {
     const position = String(req.query.position || '').trim();
     if (!position) {
       res.json({ code: 400, msg: 'position 不能为空' });
+      return;
+    }
+    // 会员免广告
+    const isMember = await checkIsMember(req);
+    if (isMember) {
+      res.json({ code: 0, data: [] });
       return;
     }
     const items = await query(

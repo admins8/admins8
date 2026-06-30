@@ -17,7 +17,7 @@ import { recordSourceHealth, sortSourcesByHealth } from '../../services/sourceHe
 import { recordUserSearch } from '../../services/userRecordService';
 import { chapterContentLoadQueue } from '../../services/chapterContentLoader';
 import { getPrefetchChapterIndexes, getRuntimeChapterContent, setRuntimeChapterContent } from '../../services/chapterRuntimeCache';
-import { fetchCollectorChapterContent } from '../../services/collectorPlugin';
+import { fetchCollectorChapterContent, getCollectorRuleForBook, fetchCollectorChaptersForBook } from '../../services/collectorPlugin';
 import { verifyReadableBookCandidate, verifyReadableSwitchCandidate } from '../../services/readabilityVerification';
 import { normalizeChapterList } from '../../services/chapterListNormalizer';
 import { createStreamCancellationState } from '../../services/streamCancellation';
@@ -195,6 +195,40 @@ export async function getChapterList(req: Request, res: Response): Promise<void>
           }
         }
       }
+
+      // 书源找不到时，尝试采集规则获取目录
+      if (chapters.length === 0 && book) {
+        try {
+          const matched = await getCollectorRuleForBook(book);
+          if (matched) {
+            console.log(`[getChapterList] 书源未找到，尝试采集规则获取目录: ruleName=${matched.rule.name}`);
+            const remote = await fetchCollectorChaptersForBook(book, matched.rule);
+            if (remote.chapters.length > 0) {
+              await transaction(async (conn) => {
+                await conn.execute('DELETE FROM book_chapters WHERE book_url = ?', [bookUrl as string]);
+                for (const ch of remote.chapters) {
+                  await conn.execute(
+                    'INSERT INTO book_chapters (book_url, chapter_index, title, url) VALUES (?, ?, ?, ?)',
+                    [bookUrl as string, ch.index, ch.title, ch.url]
+                  );
+                }
+              });
+              // 同时更新书籍信息
+              await execute(
+                `UPDATE books SET total_chapter_num = ?, latest_chapter_title = ?, type = 1, updated_at = NOW() WHERE book_url = ?`,
+                [remote.chapters.length, remote.chapters.at(-1)?.title || '', bookUrl as string]
+              );
+              chapters = await query(
+                'SELECT * FROM book_chapters WHERE book_url = ? ORDER BY chapter_index ASC',
+                [bookUrl as string]
+              );
+              console.log(`[getChapterList] 采集规则获取目录成功: ${chapters.length} 章`);
+            }
+          }
+        } catch (e: any) {
+          console.error(`[getChapterList] 采集规则获取目录失败:`, e.message);
+        }
+      }
     }
 
     res.json({ code: 0, data: chapters });
@@ -216,39 +250,111 @@ async function loadChapterContent(params: {
   const { bookUrl, chapterRow, book, origin, cleanerRules, cacheResult = false } = params;
   const chapterIdx = Number(chapterRow.chapter_index);
   return chapterContentLoadQueue.run(bookUrl, chapterIdx, async () => {
+    console.log(`[loadChapterContent] 开始加载: bookUrl=${bookUrl}, chapterIdx=${chapterIdx}, chapterUrl=${chapterRow.url}`);
+    
     const runtimeCached = getRuntimeChapterContent(bookUrl, chapterIdx);
     if (runtimeCached) {
+      console.log(`[loadChapterContent] 命中运行时缓存, 长度=${runtimeCached.length}`);
       return { title: chapterRow.title, content: cleanContent(runtimeCached, cleanerRules), index: chapterIdx };
     }
-    if (!origin) return null;
-    const originName = String(book?.origin_name || book?.originName || '').trim();
-    if (originName) {
-      const collectorContent = await fetchCollectorChapterContent(originName, chapterRow.url).catch(() => null);
-      if (collectorContent) {
-        const cleanedContent = cleanContent(collectorContent, cleanerRules);
+    console.log(`[loadChapterContent] 未命中运行时缓存`);
+
+    // 优先从本地 book_contents 表读取已采集/缓存的内容
+    try {
+      const localContentRow = await queryOne(
+        'SELECT content FROM book_contents WHERE book_url = ? AND chapter_index = ?',
+        [bookUrl, chapterIdx]
+      );
+      if (localContentRow?.content) {
+        console.log(`[loadChapterContent] 命中本地内容表, 长度=${String(localContentRow.content).length}`);
+        const cleanedContent = cleanContent(String(localContentRow.content), cleanerRules);
         if (cacheResult) {
           setRuntimeChapterContent(bookUrl, chapterIdx, cleanedContent);
         }
         return { title: chapterRow.title, content: cleanedContent, index: chapterIdx };
       }
+    } catch (e: any) {
+      console.error(`[loadChapterContent] 本地内容表查询失败:`, e.message);
     }
+
+    if (!origin) {
+      console.log(`[loadChapterContent] origin为空，尝试采集器fallback匹配`);
+    }
+
+    // 使用 getCollectorRuleForBook 进行采集器匹配（带 origin fallback）
+    const bookForMatch = book || { book_url: bookUrl, bookUrl, origin };
+    console.log(`[loadChapterContent] 尝试采集器匹配: bookUrl=${bookUrl}, origin=${origin}, originName=${book?.origin_name || book?.originName || ''}`);
+    try {
+      const matched = await getCollectorRuleForBook(bookForMatch);
+      if (matched) {
+        console.log(`[loadChapterContent] 采集器匹配成功: ruleId=${matched.id}, ruleName=${matched.rule.name}`);
+        const collectorContent = await fetchCollectorChapterContent(matched.rule.name, chapterRow.url);
+        console.log(`[loadChapterContent] 采集器返回: ${collectorContent ? '内容长度=' + collectorContent.length : 'null'}`);
+        if (collectorContent) {
+          const cleanedContent = cleanContent(collectorContent, cleanerRules);
+          console.log(`[loadChapterContent] 清洗后内容长度=${cleanedContent.length}`);
+          if (cacheResult) {
+            setRuntimeChapterContent(bookUrl, chapterIdx, cleanedContent);
+          }
+          return { title: chapterRow.title, content: cleanedContent, index: chapterIdx };
+        }
+      } else {
+        console.log(`[loadChapterContent] 采集器未匹配到规则`);
+      }
+    } catch (e: any) {
+      console.error(`[loadChapterContent] 采集器获取失败:`, e.message);
+    }
+
+    // 如果没有 origin，且采集器也没匹配到，则无法获取
+    if (!origin) {
+      console.log(`[loadChapterContent] origin为空且采集器未匹配，返回null`);
+      return null;
+    }
+    
+    console.log(`[loadChapterContent] 尝试书源获取内容: origin=${origin}`);
     const source = await queryOne('SELECT * FROM book_sources WHERE book_source_url = ?', [origin as string]);
-    if (!source) return null;
-    const engine = new WebBookEngine();
-    const contentBook = book || {
-      book_url: bookUrl,
-      bookUrl,
-      toc_url: bookUrl,
-      tocUrl: bookUrl,
-      origin,
-    };
-    const content = await engine.getContent(source, contentBook, chapterRow);
-    if (!content) return null;
-    const cleanedContent = cleanContent(content, cleanerRules);
-    if (cacheResult) {
-      setRuntimeChapterContent(bookUrl, chapterIdx, cleanedContent);
+    if (source) {
+      const engine = new WebBookEngine();
+      const contentBook = book || {
+        book_url: bookUrl,
+        bookUrl,
+        toc_url: bookUrl,
+        tocUrl: bookUrl,
+        origin,
+      };
+      const content = await engine.getContent(source, contentBook, chapterRow);
+      console.log(`[loadChapterContent] 书源获取内容: ${content ? '长度=' + content.length : 'null'}`);
+      if (content) {
+        const cleanedContent = cleanContent(content, cleanerRules);
+        if (cacheResult) {
+          setRuntimeChapterContent(bookUrl, chapterIdx, cleanedContent);
+        }
+        return { title: chapterRow.title, content: cleanedContent, index: chapterIdx };
+      }
+    } else {
+      console.log(`[loadChapterContent] 未找到书源: origin=${origin}，尝试采集器兜底`);
     }
-    return { title: chapterRow.title, content: cleanedContent, index: chapterIdx };
+
+    // 书源获取失败或找不到书源时，再次尝试采集器兜底
+    try {
+      const matched = await getCollectorRuleForBook(book || { book_url: bookUrl, bookUrl, origin });
+      if (matched) {
+        console.log(`[loadChapterContent] 书源失败后采集器兜底匹配成功: ruleName=${matched.rule.name}`);
+        const collectorContent = await fetchCollectorChapterContent(matched.rule.name, chapterRow.url);
+        if (collectorContent) {
+          const cleanedContent = cleanContent(collectorContent, cleanerRules);
+          if (cacheResult) {
+            setRuntimeChapterContent(bookUrl, chapterIdx, cleanedContent);
+          }
+          return { title: chapterRow.title, content: cleanedContent, index: chapterIdx };
+        }
+      }
+    } catch (e: any) {
+      console.error(`[loadChapterContent] 书源失败后采集器兜底失败:`, e.message);
+    }
+
+    console.log(`[loadChapterContent] 所有内容获取途径均失败，返回null`);
+    return null;
   });
 }
 
@@ -399,3 +505,65 @@ export async function refreshToc(req: Request, res: Response): Promise<void> {
     if (book.origin) {
       const source = await queryOne('SELECT * FROM book_sources WHERE book_source_url = ?', [book.origin]);
       if (source) {
+        const engine = new WebBookEngine();
+        const toc = normalizeChapterList(await engine.getChapterList(source, book));
+        if (toc && toc.length > 0) {
+          await transaction(async (conn) => {
+            await conn.execute('DELETE FROM book_chapters WHERE book_url = ?', [bookUrl as string]);
+            for (const ch of toc) {
+              await conn.execute(
+                'INSERT INTO book_chapters (book_url, chapter_index, title, url) VALUES (?, ?, ?, ?)',
+                [bookUrl as string, ch.index, ch.title, ch.url]
+              );
+            }
+          });
+          chapters = await query(
+            'SELECT * FROM book_chapters WHERE book_url = ? ORDER BY chapter_index ASC',
+            [bookUrl as string]
+          );
+        }
+      }
+    }
+
+    // 书源找不到时，尝试采集规则获取目录
+    if (chapters.length === 0) {
+      try {
+        const matched = await getCollectorRuleForBook(book);
+        if (matched) {
+          console.log(`[refreshToc] 书源未找到，尝试采集规则获取目录: ruleName=${matched.rule.name}`);
+          const remote = await fetchCollectorChaptersForBook(book, matched.rule);
+          if (remote.chapters.length > 0) {
+            await transaction(async (conn) => {
+              await conn.execute('DELETE FROM book_chapters WHERE book_url = ?', [bookUrl as string]);
+              for (const ch of remote.chapters) {
+                await conn.execute(
+                  'INSERT INTO book_chapters (book_url, chapter_index, title, url) VALUES (?, ?, ?, ?)',
+                  [bookUrl as string, ch.index, ch.title, ch.url]
+                );
+              }
+            });
+            // 同时更新书籍信息
+            await execute(
+              `UPDATE books SET total_chapter_num = ?, latest_chapter_title = ?, type = 1, updated_at = NOW() WHERE book_url = ?`,
+              [remote.chapters.length, remote.chapters.at(-1)?.title || '', bookUrl as string]
+            );
+            chapters = await query(
+              'SELECT * FROM book_chapters WHERE book_url = ? ORDER BY chapter_index ASC',
+              [bookUrl as string]
+            );
+            console.log(`[refreshToc] 采集规则获取目录成功: ${chapters.length} 章`);
+          }
+        }
+      } catch (e: any) {
+        console.error(`[refreshToc] 采集规则获取目录失败:`, e.message);
+      }
+    }
+
+    res.json({ code: 0, data: chapters });
+  } catch (err: any) {
+    sendError(res, err, '获取阅读内容失败');
+    return;
+  }
+}
+
+// 获取/设置 APP 设置

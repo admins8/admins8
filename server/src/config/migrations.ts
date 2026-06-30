@@ -26,6 +26,10 @@ import * as sourceValidationSchedule from '../migrations/024_source_validation_s
 import * as pluginsCollector from '../migrations/025_plugins_collector';
 import * as baiduPushPlugin from '../migrations/026_baidu_push_plugin';
 import * as appManagement from '../migrations/027_app_management';
+import * as seedFemaleChannel from '../migrations/028_seed_female_channel';
+import * as appBuildTasksAddRunId from '../migrations/029_app_build_tasks_add_run_id';
+import * as authorFollows from '../migrations/030_author_follows';
+import * as appConfigGitHubFields from '../migrations/031_app_config_github_fields';
 
 interface Migration {
   name: string;
@@ -60,6 +64,10 @@ const migrations: Migration[] = [
   pluginsCollector,
   baiduPushPlugin,
   appManagement,
+  seedFemaleChannel,
+  appBuildTasksAddRunId,
+  authorFollows,
+  appConfigGitHubFields,
 ];
 
 export async function runMigrations(db: mysql.Pool): Promise<void> {
@@ -74,4 +82,10 @@ export async function runMigrations(db: mysql.Pool): Promise<void> {
   const [rows] = await db.query('SELECT name FROM schema_migrations');
   const executed = new Set((rows as Array<{ name: string }>).map(row => row.name));
 
-  for
+  for (const migration of migrations) {
+    if (executed.has(migration.name)) continue;
+    await migration.up(db);
+    await db.query('INSERT INTO schema_migrations (name) VALUES (?)', [migration.name]);
+    console.log(`[DB] migration applied: ${migration.name}`);
+  }
+}

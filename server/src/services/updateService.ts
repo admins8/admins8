@@ -140,7 +140,7 @@ export function verifyFileSignature(filePath: string, signatureBase64: string, p
   verifier.end();
   try {
     return verifier.verify(publicKeyPem, signatureBase64, 'base64');
-  } catch {
+  } catch (_e) {
     return false;
   }
 }
@@ -170,11 +170,16 @@ export async function downloadAndVerify(release: UpdateRelease, options?: {
   await downloadTo(release.sigUrl, sigPath);
 
   const sigB64 = fs.readFileSync(sigPath, 'utf-8').trim();
-  const publicKeyPath = options?.publicKeyPath
+  let publicKeyPath = options?.publicKeyPath
     || process.env.LICENSE_PUBLIC_KEY_PATH
     || path.resolve(process.cwd(), 'license', 'public.pem');
+  const fallbackPublicKeyPath = path.resolve(process.cwd(), 'data', 'updates', 'public.pem');
   if (!fs.existsSync(publicKeyPath)) {
-    throw new Error(`未找到公钥：${publicKeyPath}`);
+    if (fs.existsSync(fallbackPublicKeyPath)) {
+      publicKeyPath = fallbackPublicKeyPath;
+    } else {
+      throw new Error(`未找到公钥：${publicKeyPath}`);
+    }
   }
   const pem = fs.readFileSync(publicKeyPath, 'utf-8');
   if (!verifyFileSignature(zipPath, sigB64, pem)) {

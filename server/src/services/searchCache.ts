@@ -7,7 +7,7 @@ export interface SearchCacheOptions {
 }
 
 export interface SearchCacheClient {
-  get(key: string): Promise<string | null>;
+  get(key: string): Promise<string | null | {}>;
   setEx(key: string, seconds: number, value: string): Promise<unknown>;
 }
 
@@ -32,7 +32,7 @@ export class SearchCache {
 
     try {
       const raw = await this.client.get(buildSearchCacheKey(normalized));
-      if (!raw) return null;
+      if (!raw || typeof raw !== 'string') return null;
       return JSON.parse(raw) as T;
     } catch (err: any) {
       console.warn('[Redis] 读取搜索缓存失败:', err?.message || err);

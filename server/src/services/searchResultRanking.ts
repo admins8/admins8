@@ -2,6 +2,26 @@ export function normalizeSearchText(value: unknown): string {
   return String(value || '').trim().toLowerCase().replace(/[\s\p{P}]/gu, '');
 }
 
+/** 解析作者字符串，支持 "作者：A和B" 格式 */
+function parseAuthors(authorStr: string): string[] {
+  const normalized = authorStr.trim().toLowerCase();
+  // 去掉 "作者：" / "作者:" 前缀
+  const content = normalized.replace(/^作者[:：]\s*/, '');
+  // 按 "和"、"&"、","、"，" 分割多个作者
+  return content.split(/和|&|,|，/).map(s => s.trim()).filter(Boolean);
+}
+
+/** 判断两个作者是否视为同一作者，支持 "作者：A和B" 多作者格式 */
+export function isSameAuthor(authorA: unknown, authorB: unknown): boolean {
+  const a = String(authorA || '').trim();
+  const b = String(authorB || '').trim();
+  if (!a || !b) return true; // 任一方为空则视为匹配（无法判断）
+  const listA = parseAuthors(a);
+  const listB = parseAuthors(b);
+  // 只要任一作者名互相包含即视为匹配
+  return listA.some(a1 => listB.some(b1 => a1.includes(b1) || b1.includes(a1)));
+}
+
 export function getSearchMatchScore(keyword: string, bookName: unknown): number {
   const cleanKw = normalizeSearchText(keyword);
   const nameClean = normalizeSearchText(bookName);
@@ -22,19 +42,23 @@ export type SearchMatchLevel = 'exact' | 'related' | 'weak' | 'none';
 
 export function classifySearchResult(
   keyword: string,
-  book: { name?: unknown; author?: unknown }
+  book: { name?: unknown; author?: unknown },
+  referenceAuthor?: string
 ): { level: SearchMatchLevel; label: string; score: number } {
   const nameScore = getSearchMatchScore(keyword, book.name);
   const nameClean = normalizeSearchText(book.name);
   const keywordClean = normalizeSearchText(keyword);
-  const authorClean = normalizeSearchText(book.author);
   const isExactName = !!keywordClean && nameClean === keywordClean;
-  const isKnownAuthor = authorClean === normalizeSearchText('天蚕土豆');
 
-  if (isExactName && isKnownAuthor) {
+  // 精确匹配：书名完全相同，且作者匹配（如有参考作者）
+  if (isExactName) {
+    if (referenceAuthor && !isSameAuthor(book.author, referenceAuthor)) {
+      // 书名完全相同但作者不匹配，降级为同名匹配
+      return { level: 'exact', label: '同名匹配', score: 900 };
+    }
     return { level: 'exact', label: '精确匹配', score: 1000 };
   }
-  if (isExactName) {
+  if (nameScore >= 80) {
     return { level: 'exact', label: '同名匹配', score: 900 };
   }
   if (nameScore >= 60) {
@@ -199,4 +223,24 @@ export function shouldEmitImmediateSearchResult(
   book: { _matchLevel?: unknown; _readable?: unknown; _tocVerified?: unknown },
   options: { forceVerifyToc?: boolean } = {}
 ): boolean {
-  if
+  if (book?._matchLevel !== 'exact') return false;
+  if (options.forceVerifyToc) return book._tocVerified === true;
+  return true;
+}
+
+export function getSearchWindow<T>(
+  sources: T[],
+  startIndex: number,
+  maxScanCount?: number
+): { totalSources: number; remainingSources: T[]; hasMore: boolean; searchedLimit: number } {
+  const safeStart = Math.max(0, Math.min(startIndex, sources.length));
+  const searchedLimit = typeof maxScanCount === 'number'
+    ? Math.min(safeStart + Math.max(1, maxScanCount), sources.length)
+    : sources.length;
+  return {
+    totalSources: sources.length,
+    remainingSources: sources.slice(safeStart, searchedLimit),
+    hasMore: searchedLimit < sources.length,
+    searchedLimit,
+  };
+}

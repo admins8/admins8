@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import {
+  autoFillChannelHandler,
+  autoFillSectionHandler,
   createFriendlyLinkHandler,
   createItemHandler,
   createSectionHandler,
@@ -13,6 +15,7 @@ import {
   getPublicFriendlyLinksHandler,
   listContentPagesHandler,
   listFriendlyLinksHandler,
+  listPublicContentPagesHandler,
   seedChannelHandler,
   updateChannelHandler,
   updateContentPageHandler,
@@ -28,6 +31,7 @@ export const adminPageRoutes = Router();
 
 publicPageRoutes.get('/channels/:code', getPublicChannelHandler);
 publicPageRoutes.get('/content/:slug', getPublicContentPageHandler);
+publicPageRoutes.get('/content-pages', listPublicContentPagesHandler);
 publicPageRoutes.get('/friendly-links/public', getPublicFriendlyLinksHandler);
 publicPageRoutes.get('/friendly-links', getPublicFriendlyLinksHandler);
 
@@ -35,6 +39,8 @@ adminPageRoutes.use(authMiddleware, adminMiddleware);
 adminPageRoutes.get('/channels/:code', getAdminChannelHandler);
 adminPageRoutes.put('/channels/:code', updateChannelHandler);
 adminPageRoutes.post('/channels/:code/seed', seedChannelHandler);
+adminPageRoutes.post('/channels/:code/auto-fill', autoFillChannelHandler);
+adminPageRoutes.post('/sections/:id/auto-fill', autoFillSectionHandler);
 adminPageRoutes.post('/channels/:code/sections', createSectionHandler);
 adminPageRoutes.put('/sections/:id', updateSectionHandler);
 adminPageRoutes.post('/sections/delete', deleteSectionHandler);

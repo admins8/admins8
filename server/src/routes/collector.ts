@@ -6,10 +6,16 @@ import {
   upsertCollectorRule,
   removeCollectorRule,
   runCollectorRule,
+  runBatchCollectorRule,
+  runBatchCollectorSSE,
   testRule,
+  testListPage,
   importRules,
   exportRules,
   getCollectorLogs,
+  getSchedule,
+  saveSchedule,
+  removeSchedule,
 } from '../controllers/collectorPluginController';
 import { authMiddleware, adminMiddleware } from '../middleware/auth';
 
@@ -32,6 +38,14 @@ router.get('/collector/logs', getCollectorLogs);
 
 // 采集操作
 router.post('/collector/run-single', runCollectorRule);
+router.post('/collector/run-batch', runBatchCollectorRule);
+router.get('/collector/run-batch-sse', runBatchCollectorSSE);
 router.post('/collector/test-rule', testRule);
+router.post('/collector/test-list-page', testListPage);
+
+// 定时任务
+router.get('/collector/schedules', getSchedule);
+router.post('/collector/schedules/save', saveSchedule);
+router.post('/collector/schedules/delete', removeSchedule);
 
 export default router;

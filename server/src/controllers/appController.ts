@@ -13,10 +13,10 @@ export async function getPublicConfig(req: Request, res: Response): Promise<void
   }
 }
 
-/** 管理员API - 获取完整配置 */
+/** 管理员API - 获取完整配置（敏感字段掩码） */
 export async function getConfig(req: Request, res: Response): Promise<void> {
   try {
-    const config = await appConfigService.getAppConfig();
+    const config = await appConfigService.getAdminAppConfig();
     res.json({ code: 0, data: config });
   } catch (error: any) {
     res.status(500).json({ code: 500, msg: error.message });
@@ -136,10 +136,11 @@ export async function checkUpdate(req: Request, res: Response): Promise<void> {
 
 /** 管理员API - 触发构建（通过 GitHub Actions） */
 export async function triggerBuild(req: Request, res: Response): Promise<void> {
+  let taskId: number | null = null;
   try {
     const { platform, version_name, version_code, version_id } = req.body;
 
-    const taskId = await appBuildService.createBuildTask(platform, version_name, version_code);
+    taskId = await appBuildService.createBuildTask(platform, version_name, version_code);
     await appVersionService.updateVersion(version_id, { build_task_id: taskId });
 
     // 标记为构建中
@@ -150,7 +151,7 @@ export async function triggerBuild(req: Request, res: Response): Promise<void> {
       const result = await appBuildService.triggerGitHubActionsBuild(taskId, version_name, version_code);
 
       if (result.error) {
-        // GitHub Actions 未配置，回退到本地构建提示
+        // GitHub Actions 未配置或调用失败
         await appBuildService.updateBuildTask(taskId, {
           status: 'failed',
           build_log: result.error,
@@ -158,6 +159,8 @@ export async function triggerBuild(req: Request, res: Response): Promise<void> {
         });
         res.json({ code: 0, data: { task_id: taskId, message: result.error } });
       } else {
+        // 保存 run_id（即使为0也保存，便于后续追踪）
+        await appBuildService.updateBuildTask(taskId, { run_id: result.run_id || 0 });
         res.json({
           code: 0,
           data: {
@@ -170,6 +173,14 @@ export async function triggerBuild(req: Request, res: Response): Promise<void> {
       res.json({ code: 0, data: { task_id: taskId, message: '暂不支持该平台的远程构建' } });
     }
   } catch (error: any) {
+    // 异常时确保任务状态被更新为失败，避免一直卡在 building
+    if (taskId) {
+      await appBuildService.updateBuildTask(taskId, {
+        status: 'failed',
+        build_log: `构建异常: ${error.message}`,
+        completed_at: new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19),
+      }).catch(() => {});
+    }
     res.status(500).json({ code: 500, msg: error.message });
   }
 }

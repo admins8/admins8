@@ -47,4 +47,6 @@ export function licenseDomainGuard(options?: {
       return;
     }
 
-    next(
+    next();
+  };
+}

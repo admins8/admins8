@@ -21,4 +21,6 @@ test('换源校验只验证目录可用，不在切换阶段验证正文', async
     }
   );
 
-  assert.equal(result.o
+  assert.equal(result.ok, true);
+  assert.equal(contentCalls, 0);
+});

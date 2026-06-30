@@ -1,88 +1,8 @@
-import axios, { AxiosRequestConfig } from 'axios';
 import * as cheerio from 'cheerio';
 import { JSONPath } from 'jsonpath-plus';
-
-// ============ HTTP 请求工具 ============
-
-interface UrlOption {
-  method?: string;
-  charset?: string;
-  headers?: Record<string, string>;
-  body?: string;
-  webView?: any;
-  js?: string;
-  type?: string;
-  retry?: number;
-  proxy?: string;
-}
-
-function buildHeaders(sourceHeader: string | null): Record<string, string> {
-  const headers: Record<string, string> = {
-    'User-Agent': 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-  };
-  if (sourceHeader) {
-    try {
-      const customHeaders = JSON.parse(sourceHeader);
-      Object.assign(headers, customHeaders);
-    } catch {
-      sourceHeader.split('\n').forEach(line => {
-        const idx = line.indexOf(':');
-        if (idx > 0) {
-          headers[line.substring(0, idx).trim()] = line.substring(idx + 1).trim();
-        }
-      });
-    }
-  }
-  return headers;
-}
-
-/** 解析 searchUrl，分离 URL 和 JSON 配置 */
-function parseSearchUrl(raw: string): { url: string; option: UrlOption } {
-  if (!raw) return { url: '', option: {} };
-  const match = raw.match(/,\s*(\{[\s\S]*)$/);
-  if (match) {
-    const url = raw.substring(0, raw.length - match[0].length);
-    try {
-      const option = JSON.parse(match[1]);
-      return { url, option };
-    } catch {
-      return { url: raw, option: {} };
-    }
-  }
-  return { url: raw, option: {} };
-}
-
-async function httpRequest(url: string, headers: Record<string, string>, option: UrlOption = {}): Promise<string> {
-  const method = (option.method || 'GET').toUpperCase();
-  const charset = option.charset || '';
-  const axiosConfig: AxiosRequestConfig = {
-    url,
-    method: method as any,
-    headers: {
-      ...headers,
-      ...(option.headers || {}),
-    },
-    timeout: 15000,
-    responseType: 'arraybuffer',
-  };
-  if (method === 'POST' && option.body) {
-    axiosConfig.data = option.body;
-    if (!axiosConfig.headers!['Content-Type']) {
-      axiosConfig.headers!['Content-Type'] = 'application/x-www-form-urlencoded';
-    }
-  }
-  const response = await axios(axiosConfig);
-  const buffer = Buffer.from(response.data);
-  if (charset && charset.toLowerCase() !== 'utf-8' && charset.toLowerCase() !== 'utf8') {
-    try {
-      const iconv = await import('iconv-lite');
-      return iconv.decode(buffer, charset as any);
-    } catch {
-      return buffer.toString('utf-8');
-    }
-  }
-  return buffer.toString('utf-8');
-}
+import { httpRequest, UrlOption, buildHeaders, parseSearchUrl } from './bookSourceHttpClient';
+import { isAntiCrawlPage, fetchWithBrowser } from './browserRender';
+import { setRuleExecutionContext } from './ruleExecutor';
 
 // ============ Legado 规则解析引擎 ============
 
@@ -244,7 +164,7 @@ function getResultFromElement(element: any, $: cheerio.CheerioAPI, suffix: strin
 export function executeRule(rule: string, html: string, isJson: boolean = false): string[] {
   if (!rule || rule.trim() === '') return [];
 
-  // ## 正则替换语法: rule##regex##replacement
+  // ## 正则替换语法: rule##regex##replacement 或 rule##regex（replacement 默认为空字符串）
   const regexReplaceMatch = rule.match(/^(.+?)##(.+?)##(.+)$/);
   if (regexReplaceMatch) {
     const baseResults = executeRule(regexReplaceMatch[1], html, isJson);
@@ -252,6 +172,17 @@ export function executeRule(rule: string, html: string, isJson: boolean = false)
     try {
       const regex = new RegExp(regexReplaceMatch[2], 'g');
       return baseResults.map(r => r.replace(regex, regexReplaceMatch[3]));
+    } catch { return baseResults; }
+  }
+
+  // ## 正则替换语法（单 ## 格式，replacement 默认为空字符串）
+  const regexReplaceMatch2 = rule.match(/^(.+?)##(.+)$/);
+  if (regexReplaceMatch2) {
+    const baseResults = executeRule(regexReplaceMatch2[1], html, isJson);
+    if (baseResults.length === 0) return [];
+    try {
+      const regex = new RegExp(regexReplaceMatch2[2], 'g');
+      return baseResults.map(r => r.replace(regex, ''));
     } catch { return baseResults; }
   }
 
@@ -437,6 +368,12 @@ export class WebBookEngine {
   }
 
   async search(source: any, keyword: string): Promise<SearchBookResult[]> {
+    // 设置规则执行上下文，使 JS 沙箱可以访问书源信息
+    setRuleExecutionContext({
+      sourceUrl: source.book_source_url || source.bookSourceUrl || '',
+      baseUrl: source.book_source_url || source.bookSourceUrl || '',
+      source,
+    });
     this.initHeaders(source);
     const sourceName = source.book_source_name || source.bookSourceName || '未知';
     const { url, option } = this.buildSearchRequest(
@@ -472,7 +409,7 @@ export class WebBookEngine {
     }
   }
 
-  private parseSearchResult(html: string, rule: any, source: any, keyword?: string): SearchBookResult[] {
+  parseSearchResult(html: string, rule: any, source: any, keyword?: string): SearchBookResult[] {
     const results: SearchBookResult[] = [];
     const bookListRule = rule.bookList || '';
     if (!bookListRule) return results;
@@ -561,6 +498,11 @@ export class WebBookEngine {
   }
 
   async getBookInfo(source: any, bookUrl: string): Promise<Partial<SearchBookResult>> {
+    setRuleExecutionContext({
+      sourceUrl: source.book_source_url || source.bookSourceUrl || '',
+      baseUrl: source.book_source_url || source.bookSourceUrl || '',
+      source,
+    });
     this.initHeaders(source);
     try {
       const html = await httpRequest(bookUrl, this.headers);
@@ -584,6 +526,11 @@ export class WebBookEngine {
   }
 
   async getChapterList(source: any, book: any): Promise<ChapterResult[]> {
+    setRuleExecutionContext({
+      sourceUrl: source.book_source_url || source.bookSourceUrl || '',
+      baseUrl: source.book_source_url || source.bookSourceUrl || '',
+      source,
+    });
     this.initHeaders(source);
     const tocUrl = book.toc_url || book.tocUrl || book.book_url || book.bookUrl;
     try {
@@ -659,8 +606,134 @@ export class WebBookEngine {
 
 
   async getContent(source: any, book: any, chapter: any): Promise<string | null> {
+    setRuleExecutionContext({
+      sourceUrl: source.book_source_url || source.bookSourceUrl || '',
+      baseUrl: source.book_source_url || source.bookSourceUrl || '',
+      source,
+    });
     this.initHeaders(source);
     const contentUrl = chapter.url;
     if (!contentUrl) return null;
+
+    const sourceType = source.book_source_type ?? source.bookSourceType ?? 0;
+
     try {
-      const html = aw
+      let html = await httpRequest(contentUrl, this.headers);
+
+      // 检测是否触发反爬验证
+      if (isAntiCrawlPage(html, contentUrl)) {
+        console.log(`[WebBookEngine] 检测到反爬验证，使用浏览器渲染: ${source.book_source_name} - ${contentUrl}`);
+        try {
+          html = await fetchWithBrowser(contentUrl, {
+            timeout: 30000,
+            waitForTimeout: 3000,
+          });
+          console.log(`[WebBookEngine] 浏览器渲染成功: ${source.book_source_name} - ${contentUrl}`);
+        } catch (browserError: any) {
+          console.error(`[WebBookEngine] 浏览器渲染失败: ${source.book_source_name}`, browserError.message);
+        }
+      }
+
+      const ruleContent = typeof source.rule_content === 'string'
+        ? JSON.parse(source.rule_content)
+        : (source.rule_content || source.ruleContent || {});
+
+      // 根据书源类型调整解析策略
+      if (sourceType === 1) {
+        // 音频书源：返回音频 URL 列表（JSON 格式）
+        return this.parseAudioContent(html, ruleContent, contentUrl);
+      } else if (sourceType === 2) {
+        // 图片书源：返回图片 URL 列表（JSON 格式）
+        return this.parseImageContent(html, ruleContent, contentUrl);
+      } else if (sourceType === 3) {
+        // 文件书源：返回下载链接
+        return this.parseFileContent(html, ruleContent, contentUrl);
+      }
+
+      return this.parseContent(html, ruleContent, contentUrl);
+    } catch (e: any) {
+      console.error(`[获取内容失败] ${source.book_source_name}:`, e.message);
+      return null;
+    }
+  }
+
+  /**
+   * 解析音频内容
+   * 返回 JSON 字符串，包含音频 URL 列表
+   */
+  private parseAudioContent(html: string, rule: any, baseUrl: string): string | null {
+    if (!rule.content) return null;
+    const contents = executeRule(rule.content, html);
+    if (contents.length === 0) return null;
+
+    // 音频内容格式：每行一个音频 URL，或 JSON 数组
+    const audioUrls = contents.map(url => {
+      if (url && !url.startsWith('http') && !url.startsWith('data:')) {
+        try { return new URL(url, baseUrl).href; } catch { return url; }
+      }
+      return url;
+    });
+
+    return JSON.stringify({ type: 'audio', urls: audioUrls });
+  }
+
+  /**
+   * 解析图片内容
+   * 返回 JSON 字符串，包含图片 URL 列表
+   */
+  private parseImageContent(html: string, rule: any, baseUrl: string): string | null {
+    if (!rule.content) return null;
+    const contents = executeRule(rule.content, html);
+    if (contents.length === 0) return null;
+
+    const imageUrls = contents.map(url => {
+      if (url && !url.startsWith('http') && !url.startsWith('data:')) {
+        try { return new URL(url, baseUrl).href; } catch { return url; }
+      }
+      return url;
+    });
+
+    return JSON.stringify({ type: 'image', urls: imageUrls });
+  }
+
+  /**
+   * 解析文件下载内容
+   * 返回下载链接
+   */
+  private parseFileContent(html: string, rule: any, baseUrl: string): string | null {
+    if (!rule.content) return null;
+    const contents = executeRule(rule.content, html);
+    if (contents.length === 0) return null;
+
+    const downloadUrl = contents[0];
+    if (downloadUrl && !downloadUrl.startsWith('http')) {
+      try { return new URL(downloadUrl, baseUrl).href; } catch { return downloadUrl; }
+    }
+    return downloadUrl;
+  }
+
+  private parseContent(html: string, rule: any, baseUrl: string): string | null {
+    if (!rule.content) return null;
+    const contents = executeRule(rule.content, html);
+    if (contents.length === 0) return null;
+    let content = contents.join('\n');
+    content = content.replace(/<img[^>]+src=["']([^"']+)["'][^>]*>/gi, (match: string, src: string) => {
+      if (src && !src.startsWith('http') && !src.startsWith('data:')) {
+        try { return match.replace(src, new URL(src, baseUrl).href); } catch { return match; }
+      }
+      return match;
+    });
+    if (rule.replaceRegex) {
+      const replaces = Array.isArray(rule.replaceRegex) ? rule.replaceRegex : [rule.replaceRegex];
+      for (const r of replaces) {
+        try {
+          const regex = new RegExp(r.pattern, r.flags || 'g');
+          content = content.replace(regex, r.replacement || '');
+        } catch { /* ignore */ }
+      }
+    }
+    return content;
+  }
+}
+
+export const webBookEngine = new WebBookEngine();

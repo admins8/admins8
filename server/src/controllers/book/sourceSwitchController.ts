@@ -35,10 +35,11 @@ function normalizeText(value: any): string {
   return String(value || '').trim().toLowerCase().replace(/\s+/g, '');
 }
 
-/** 判断作者是否有效（非空、非未知、非无作者） */
+/** 判断作者是否有效（非未知、非无作者，允许空作者通过） */
 function isValidAuthor(author: any): boolean {
   const a = normalizeText(author);
-  if (!a) return false;
+  // 允许空作者通过验证（与首页搜索保持一致，不过滤空作者）
+  if (!a) return true;
   const invalidPatterns = ['未知', '佚名', '无作者', '作者不详', '暂无作者', '未知作者', 'null', 'undefined', 'n/a'];
   return !invalidPatterns.some(p => a.includes(p));
 }
@@ -46,7 +47,13 @@ function isValidAuthor(author: any): boolean {
 export function isSameBook(candidate: SearchBookResult, book: any): boolean {
   const candidateName = normalizeText(candidate.name);
   const bookName = normalizeText(book.name);
-  if (!candidateName || !bookName || candidateName !== bookName) return false;
+  if (!candidateName || !bookName) return false;
+
+  // 书名匹配：完全匹配或开头匹配（与首页搜索 getSearchMatchScore >= 80 保持一致）
+  const nameMatch = candidateName === bookName
+    || candidateName.startsWith(bookName)
+    || bookName.startsWith(candidateName);
+  if (!nameMatch) return false;
 
   const candidateAuthor = normalizeText(candidate.author);
   const bookAuthor = normalizeText(book.author);
@@ -245,75 +252,126 @@ export async function getAlternateSources(req: Request, res: Response): Promise<
     const rawSources = await query(
       `SELECT id, book_source_url, book_source_name, search_url, rule_search, rule_toc, header, weight, custom_order, last_check_status
        FROM book_sources
-       WHERE enabled = 1
+       WHERE enabled = 1 AND (last_check_status IS NULL OR last_check_status != 2)
        ORDER BY weight DESC, custom_order ASC`
     );
     const sources = await sortSourcesByHealth(rawSources);
 
-    const CONCURRENCY = searchSettings.sourceSwitchConcurrency;
-    const SOURCE_TIMEOUT = searchSettings.sourceSwitchTimeoutMs;
-    const TOC_TIMEOUT = searchSettings.sourceSwitchTocTimeoutMs;
+    const CONCURRENCY = Math.min(Math.max(searchSettings.sourceSwitchConcurrency, 5), 15);
+    // 换源场景单源超时4秒，平衡搜索覆盖和响应速度
+    const SOURCE_TIMEOUT = Math.min(searchSettings.sourceSwitchTimeoutMs, 4000);
+    const TOC_TIMEOUT = Math.min(searchSettings.sourceSwitchTocTimeoutMs, 6000);
+    // 换源找到足够结果后提前停止（8个有效源）
+    const EARLY_STOP_COUNT = 8;
+    // 整轮搜索总超时15秒
+    const TOTAL_TIMEOUT_MS = 15000;
     const results: any[] = [...localResults];
     const localAggregateKeys = new Set(localResults.map(item => getAggregateKey(item)).filter(Boolean));
 
-    for (let i = 0; i < sources.length && results.length < 30; i += CONCURRENCY) {
-      const batch = sources.slice(i, i + CONCURRENCY);
-      const batchResults = await Promise.allSettled(
-        batch.map(async (source) => {
-          try {
-            const sourceEngine = new WebBookEngine(searchRequestOptions);
-            const startedAt = Date.now();
-            const books = await Promise.race<SearchBookResult[]>([
-              sourceEngine.search(source, book.name),
-              new Promise<SearchBookResult[]>((_, reject) => setTimeout(() => reject(new Error('超时')), SOURCE_TIMEOUT)),
-            ]);
-            await recordSourceHealth(source, Array.isArray(books) && books.length > 0, Date.now() - startedAt);
-            const sourceUrl = source.book_source_url || source.bookSourceUrl;
-            const isCurrentSource = String(sourceUrl || '') === String(book.origin || '');
-            const matched = books.find(item => (isCurrentSource || item.bookUrl !== bookUrl) && isSameBook(item, book));
-            if (!matched) return null;
-            if (!isValidAuthor(matched.author)) {
-              console.log(`[换源过滤] ${source.book_source_name || source.bookSourceName}: 《${matched.name}》作者无效(${matched.author})`);
-              return null;
-            }
+    // 使用并发池模式：所有书源共享一个并发池，不等待批次完成，worker 持续取下一个
+    let sourceIdx = 0;
+    const workerCount = Math.min(CONCURRENCY, sources.length);
+
+    async function worker(): Promise<void> {
+      while (sourceIdx < sources.length) {
+        // 早停：已找到足够多的有效源
+        if (EARLY_STOP_COUNT > 0 && results.length >= EARLY_STOP_COUNT) break;
+        const idx = sourceIdx++;
+        const source = sources[idx];
+        try {
+          const sourceEngine = new WebBookEngine();
+          const startedAt = Date.now();
+          const books = await Promise.race<SearchBookResult[]>([
+            sourceEngine.search(source, book.name),
+            new Promise<SearchBookResult[]>((_, reject) => setTimeout(() => reject(new Error('超时')), SOURCE_TIMEOUT)),
+          ]);
+          await recordSourceHealth(source, Array.isArray(books) && books.length > 0, Date.now() - startedAt);
+          const sourceUrl = source.book_source_url || source.bookSourceUrl;
+          const isCurrentSource = String(sourceUrl || '') === String(book.origin || '');
+          const matched = books.find(item => (isCurrentSource || item.bookUrl !== bookUrl) && isSameBook(item, book));
+          if (!matched) continue;
+          if (!isValidAuthor(matched.author)) {
+            console.log(`[换源过滤] ${source.book_source_name || source.bookSourceName}: 《${matched.name}》作者无效(${matched.author})`);
+            continue;
+          }
+
+          // 快速判断：书名+作者完全匹配的直接通过，不做 TOC 验证
+          const candidateName = (matched.name || '').replace(/\s+/g, '').toLowerCase();
+          const bookNameNorm = (book.name || '').replace(/\s+/g, '').toLowerCase();
+          const candidateAuthor = (matched.author || '').replace(/\s+/g, '').toLowerCase();
+          const bookAuthorNorm = (book.author || '').replace(/\s+/g, '').toLowerCase();
+          const isExactMatch = candidateName === bookNameNorm
+            && candidateAuthor === bookAuthorNorm
+            && isValidAuthor(matched.author);
+
+          let result: any;
+          if (isExactMatch) {
+            result = {
+              ...buildAlternateSourceResult(matched, source, book),
+              _tocVerified: false,
+              _contentVerified: false,
+              _readable: true,
+              _tocCheckFailed: false,
+              _pendingTocVerify: true,
+            };
+            // 后台异步验证 TOC（不阻塞返回）
+            verifyReadableSwitchCandidate({
+              engine: sourceEngine,
+              source,
+              book: matched,
+              chapterIndex: currentChapterIndex,
+              timeoutMs: TOC_TIMEOUT,
+            }).then(readable => {
+              result._tocVerified = readable.tocVerified;
+              result._contentVerified = readable.contentVerified;
+              result._readable = readable.readable;
+              result._tocCheckFailed = !readable.tocVerified;
+              result._pendingTocVerify = false;
+            }).catch(() => {
+              result._pendingTocVerify = false;
+            });
+          } else {
             const readable = await verifyReadableSwitchCandidate({
               engine: sourceEngine,
               source,
               book: matched,
               chapterIndex: currentChapterIndex,
-              timeoutMs: Math.max(TOC_TIMEOUT, SOURCE_TIMEOUT),
+              timeoutMs: TOC_TIMEOUT,
             });
-            if (!readable.readable && !shouldAllowUnverifiedSwitchCandidate(matched, book)) return null;
-            return {
+            if (!readable.readable && !shouldAllowUnverifiedSwitchCandidate(matched, book)) continue;
+            result = {
               ...buildAlternateSourceResult(matched, source, book),
               _tocVerified: readable.tocVerified,
               _contentVerified: readable.contentVerified,
               _readable: readable.readable,
               _tocCheckFailed: !readable.tocVerified,
             };
-          } catch {
-            await recordSourceHealth(source, false, SOURCE_TIMEOUT);
-            return null;
           }
-        })
-      );
 
-      for (const item of batchResults) {
-        if (item.status === 'fulfilled') {
-          const value = item.value;
-          if (!value) continue;
-          const valueAggregateKey = getAggregateKey(value);
-          if (!results.some(r => r.bookUrl === value.bookUrl) && !(valueAggregateKey && localAggregateKeys.has(valueAggregateKey))) {
-            results.push(value);
+          const valueAggregateKey = getAggregateKey(result);
+          if (!results.some(r => r.bookUrl === result.bookUrl) && !(valueAggregateKey && localAggregateKeys.has(valueAggregateKey))) {
+            results.push(result);
           }
+        } catch {
+          await recordSourceHealth(source, false, SOURCE_TIMEOUT);
         }
       }
     }
 
+    // 整体搜索加总超时，避免worker堆积导致响应过慢
+    const searchPromise = Promise.all(Array.from({ length: workerCount }, () => worker()));
+    const totalTimeoutPromise = new Promise<void>((_, reject) =>
+      setTimeout(() => reject(new Error('整体搜索超时')), TOTAL_TIMEOUT_MS)
+    );
+    try {
+      await Promise.race([searchPromise, totalTimeoutPromise]);
+    } catch {
+      /* 总超时或异常，使用已收集的结果 */
+    }
+
     results.sort((a, b) => Number(Boolean(b._local)) - Number(Boolean(a._local)) || Number(Boolean(b._tocVerified)) - Number(Boolean(a._tocVerified)) || b.matchScore - a.matchScore);
-    const limitedResults = results.slice(0, 30);
-    await setAlternateSourceCache(cacheKey, limitedResults, searchSettings.alternateSourceCacheTtlSeconds);
-    res.json({ code: 0, data: limitedResults });
+    await setAlternateSourceCache(cacheKey, results, searchSettings.alternateSourceCacheTtlSeconds);
+    res.json({ code: 0, data: results });
   } catch (err: any) {
     sendError(res, err, '换源失败');
     return;
@@ -408,16 +466,25 @@ export async function streamAlternateSources(req: Request, res: Response): Promi
     const rawSources = await query(
       `SELECT id, book_source_url, book_source_name, search_url, rule_search, rule_toc, header, weight, custom_order, last_check_status
        FROM book_sources
-       WHERE enabled = 1
+       WHERE enabled = 1 AND (last_check_status IS NULL OR last_check_status != 2)
        ORDER BY weight DESC, custom_order ASC`
     );
     const sources = await sortSourcesByHealth(rawSources);
 
+    // 解析排除列表（继续搜索时排除已找到的书源）
+    const excludeParam = String(req.query.excludeBookUrls || '');
+    const excludedUrls = new Set(excludeParam ? excludeParam.split(',').map(s => s.trim()).filter(Boolean) : []);
+
     sendEvent({ type: 'start', total: sources.length + localResults.length });
 
-    const CONCURRENCY = searchSettings.sourceSwitchConcurrency;
-    const SOURCE_TIMEOUT = searchSettings.sourceSwitchTimeoutMs;
-    const TOC_TIMEOUT = searchSettings.sourceSwitchTocTimeoutMs;
+    const CONCURRENCY = Math.min(Math.max(searchSettings.sourceSwitchConcurrency, 5), 15);
+    // 换源场景单源超时4秒，平衡搜索覆盖和响应速度
+    const SOURCE_TIMEOUT = Math.min(searchSettings.sourceSwitchTimeoutMs, 4000);
+    const TOC_TIMEOUT = Math.min(searchSettings.sourceSwitchTocTimeoutMs, 6000);
+    // 每轮搜索找到8个有效源后停止，用户滚动可继续搜索下一批
+    const EARLY_STOP_COUNT = 8;
+    // 整轮搜索总超时15秒，防止worker堆积导致前端长时间等待
+    const TOTAL_TIMEOUT_MS = 15000;
     const results: any[] = [];
     const localAggregateKeys = new Set(localResults.map(item => getAggregateKey(item)).filter(Boolean));
     for (const item of localResults) {
@@ -425,72 +492,124 @@ export async function streamAlternateSources(req: Request, res: Response): Promi
       sendEvent({ type: 'result', data: item, count: results.length, local: true });
     }
 
-    for (let i = 0; i < sources.length && results.length < 30; i += CONCURRENCY) {
-      if (cancellation.isCancelled()) break;
-      const batch = sources.slice(i, i + CONCURRENCY);
-      const batchResults = await Promise.allSettled(
-        batch.map(async (source) => {
-          try {
-            if (cancellation.isCancelled()) return null;
-            const sourceEngine = new WebBookEngine(searchRequestOptions);
-            const startedAt = Date.now();
-            const books = await Promise.race<SearchBookResult[]>([
-              sourceEngine.search(source, book.name),
-              new Promise<SearchBookResult[]>((_, reject) => setTimeout(() => reject(new Error('超时')), SOURCE_TIMEOUT)),
-            ]);
-            await recordSourceHealth(source, Array.isArray(books) && books.length > 0, Date.now() - startedAt);
-            const sourceUrl = source.book_source_url || source.bookSourceUrl;
-            const isCurrentSource = String(sourceUrl || '') === String(book.origin || '');
-            const matched = books.find(item => (isCurrentSource || item.bookUrl !== bookUrl) && isSameBook(item, book));
-            if (!matched) return null;
-            if (!isValidAuthor(matched.author)) {
-              console.log(`[换源流式过滤] ${source.book_source_name || source.bookSourceName}: 《${matched.name}》作者无效(${matched.author})`);
-              return null;
-            }
-            if (cancellation.isCancelled()) return null;
+    // 使用并发池模式：所有书源共享一个并发池，worker 持续取下一个
+    let sourceIdx = 0;
+    let searchedCount = 0;
+    const workerCount = Math.min(CONCURRENCY, sources.length);
+
+    async function worker(): Promise<void> {
+      while (sourceIdx < sources.length) {
+        if (cancellation.isCancelled()) break;
+        // 早停：已找到足够多的有效源，不再搜索剩余书源
+        if (EARLY_STOP_COUNT > 0 && results.length >= EARLY_STOP_COUNT) break;
+        const idx = sourceIdx++;
+        const source = sources[idx];
+        try {
+          const sourceEngine = new WebBookEngine();
+          const startedAt = Date.now();
+          const books = await Promise.race<SearchBookResult[]>([
+            sourceEngine.search(source, book.name),
+            new Promise<SearchBookResult[]>((_, reject) => setTimeout(() => reject(new Error('超时')), SOURCE_TIMEOUT)),
+          ]);
+          await recordSourceHealth(source, Array.isArray(books) && books.length > 0, Date.now() - startedAt);
+          const sourceUrl = source.book_source_url || source.bookSourceUrl;
+          const isCurrentSource = String(sourceUrl || '') === String(book.origin || '');
+          const matched = books.find(item => (isCurrentSource || item.bookUrl !== bookUrl) && isSameBook(item, book));
+          if (!matched) continue;
+          // 排除已找到的书源（继续搜索模式）
+          if (excludedUrls.has(matched.bookUrl)) continue;
+          if (!isValidAuthor(matched.author)) {
+            console.log(`[换源流式过滤] ${source.book_source_name || source.bookSourceName}: 《${matched.name}》作者无效(${matched.author})`);
+            continue;
+          }
+          if (cancellation.isCancelled()) break;
+
+          // 快速判断：书名+作者完全匹配的直接通过，不做 TOC 验证
+          const candidateName = (matched.name || '').replace(/\s+/g, '').toLowerCase();
+          const bookNameNorm = (book.name || '').replace(/\s+/g, '').toLowerCase();
+          const candidateAuthor = (matched.author || '').replace(/\s+/g, '').toLowerCase();
+          const bookAuthorNorm = (book.author || '').replace(/\s+/g, '').toLowerCase();
+          const isExactMatch = candidateName === bookNameNorm
+            && candidateAuthor === bookAuthorNorm
+            && isValidAuthor(matched.author);
+
+          let result: any;
+          if (isExactMatch) {
+            result = {
+              ...buildAlternateSourceResult(matched, source, book),
+              _tocVerified: false,
+              _contentVerified: false,
+              _readable: true,
+              _tocCheckFailed: false,
+              _pendingTocVerify: true,
+            };
+            // 后台异步验证 TOC（不阻塞返回）
+            verifyReadableSwitchCandidate({
+              engine: sourceEngine,
+              source,
+              book: matched,
+              chapterIndex: currentChapterIndex,
+              timeoutMs: TOC_TIMEOUT,
+            }).then(readable => {
+              result._tocVerified = readable.tocVerified;
+              result._contentVerified = readable.contentVerified;
+              result._readable = readable.readable;
+              result._tocCheckFailed = !readable.tocVerified;
+              result._pendingTocVerify = false;
+            }).catch(() => {
+              result._pendingTocVerify = false;
+            });
+          } else {
+            // 非精确匹配：需要 TOC 验证
             const readable = await verifyReadableSwitchCandidate({
               engine: sourceEngine,
               source,
               book: matched,
               chapterIndex: currentChapterIndex,
-              timeoutMs: Math.max(TOC_TIMEOUT, SOURCE_TIMEOUT),
+              timeoutMs: TOC_TIMEOUT,
             });
-            if (!readable.readable && !shouldAllowUnverifiedSwitchCandidate(matched, book)) return null;
-            return {
+            if (!readable.readable && !shouldAllowUnverifiedSwitchCandidate(matched, book)) continue;
+            result = {
               ...buildAlternateSourceResult(matched, source, book),
               _tocVerified: readable.tocVerified,
               _contentVerified: readable.contentVerified,
               _readable: readable.readable,
               _tocCheckFailed: !readable.tocVerified,
             };
-          } catch {
-            await recordSourceHealth(source, false, SOURCE_TIMEOUT);
-            return null;
           }
-        })
-      );
 
-      for (const item of batchResults) {
-        if (cancellation.isCancelled() || results.length >= 30) break;
-        if (item.status !== 'fulfilled' || !item.value) continue;
-        const value = item.value;
-        const valueAggregateKey = getAggregateKey(value);
-        if (results.some(r => r.bookUrl === value.bookUrl) || (valueAggregateKey && localAggregateKeys.has(valueAggregateKey))) continue;
-        results.push(value);
-        sendEvent({ type: 'result', data: value, count: results.length });
+          const valueAggregateKey = getAggregateKey(result);
+          if (!results.some(r => r.bookUrl === result.bookUrl) && !(valueAggregateKey && localAggregateKeys.has(valueAggregateKey))) {
+            results.push(result);
+            sendEvent({ type: 'result', data: result, count: results.length });
+          }
+        } catch {
+          await recordSourceHealth(source, false, SOURCE_TIMEOUT);
+        } finally {
+          searchedCount++;
+        }
       }
+    }
 
-      sendEvent({
-        type: 'progress',
-        searched: Math.min(i + CONCURRENCY, sources.length),
-        total: sources.length,
-        results: results.length,
-      });
+    // 整体搜索加总超时，避免worker堆积导致前端长时间等待
+    const searchPromise = Promise.all(Array.from({ length: workerCount }, () => worker()));
+    const totalTimeoutPromise = new Promise<void>((_, reject) =>
+      setTimeout(() => reject(new Error('整体搜索超时')), TOTAL_TIMEOUT_MS)
+    );
+    try {
+      await Promise.race([searchPromise, totalTimeoutPromise]);
+    } catch {
+      /* 总超时或异常，使用已收集的结果 */
     }
 
     if (!cancellation.isCancelled()) {
-      await setAlternateSourceCache(cacheKey, results.slice(0, 30), searchSettings.alternateSourceCacheTtlSeconds);
-      sendEvent({ type: 'done', total: sources.length, results: results.length });
+      // 只有完整搜索时才写入缓存（继续搜索模式不写缓存）
+      if (excludedUrls.size === 0) {
+        await setAlternateSourceCache(cacheKey, results, searchSettings.alternateSourceCacheTtlSeconds);
+      }
+      // hasMore: 是否还有更多书源未搜索完（因早停或还有剩余书源）
+      const hasMore = sourceIdx < sources.length;
+      sendEvent({ type: 'done', total: sources.length, results: results.length, hasMore, searchedCount });
     }
   } catch (err: any) {
     if (!cancellation.isCancelled()) sendEvent({ type: 'error', msg: err.message });
@@ -512,13 +631,65 @@ export async function switchBookSource(req: Request, res: Response): Promise<voi
     const currentChapterIndex = Number(chapterIndex ?? 0);
     const searchSettings = await getSearchSwitchSettings();
     const searchRequestOptions = buildSearchRequestOptions(searchSettings);
-    const verifiedTarget = await verifySwitchTargetReadable(newBook, currentChapterIndex, {
-      findSourceByUrl: (sourceUrl) => queryOne(
-        'SELECT * FROM book_sources WHERE book_source_url = ? LIMIT 1',
-        [sourceUrl]
-      ),
-      createEngine: () => new WebBookEngine(searchRequestOptions),
-    });
+
+    // 规范化 URL：去除尾部斜杠和 # 后面的内容，统一协议
+    function normalizeSourceUrl(url: string): string {
+      return String(url || '')
+        .trim()
+        .replace(/#.*$/, '')
+        .replace(/\/+$/, '')
+        .replace(/^https?:\/\//, '');
+    }
+
+    let verifiedTarget;
+
+    if (newBook._local) {
+      // 本地已采集/缓存的书源：直接从数据库获取 TOC，跳过实时验证
+      const localChapters = await query(
+        'SELECT chapter_index, title, url FROM book_chapters WHERE book_url = ? ORDER BY chapter_index ASC',
+        [newBook.bookUrl]
+      );
+      if (Array.isArray(localChapters) && localChapters.length > 0) {
+        verifiedTarget = {
+          ok: true,
+          toc: localChapters.map((ch: any, i: number) => ({
+            index: ch.chapter_index ?? i,
+            title: ch.title,
+            url: ch.url,
+          })),
+        };
+        console.log(`[换源] 本地采集书源: ${newBook.sourceName}, TOC 共 ${localChapters.length} 章`);
+      } else {
+        verifiedTarget = { ok: false, msg: '本地书源目录为空' };
+      }
+    } else {
+      verifiedTarget = await verifySwitchTargetReadable(newBook, currentChapterIndex, {
+        findSourceByUrl: async (sourceUrl) => {
+          const normalized = normalizeSourceUrl(sourceUrl);
+          // 先尝试原始 URL 精确匹配
+          let source = await queryOne(
+            'SELECT * FROM book_sources WHERE book_source_url = ? LIMIT 1',
+            [sourceUrl]
+          );
+          if (source) return source;
+          // 再尝试规范化 URL 精确匹配（去除 #参数、尾部斜杠）
+          source = await queryOne(
+            'SELECT * FROM book_sources WHERE book_source_url = ? LIMIT 1',
+            [normalized]
+          );
+          if (source) return source;
+          // 最后尝试模糊匹配（忽略尾部斜杠、#参数、协议差异）
+          const allSources = await query('SELECT * FROM book_sources WHERE enabled = 1');
+          source = (allSources || []).find((s: any) => {
+            const dbUrl = normalizeSourceUrl(s.book_source_url || s.bookSourceUrl);
+            return dbUrl === normalized;
+          });
+          return source || null;
+        },
+        createEngine: () => new WebBookEngine(),
+      });
+    }
+
     if (!verifiedTarget.ok) {
       res.json({ code: 400, msg: verifiedTarget.msg || '该书源目录不可用，已跳过切换' });
       return;
@@ -568,4 +739,230 @@ export async function switchBookSource(req: Request, res: Response): Promise<voi
         newBook.kind || '',
       ]);
 
-      await p
+      await persistVerifiedSwitchData(newBook.bookUrl, verifiedTarget);
+      res.json({ code: 0, msg: '换源成功', data: { bookUrl: newBook.bookUrl } });
+      return;
+    }
+
+    const oldShelf = await queryOne(
+      'SELECT * FROM user_books WHERE user_id = ? AND book_url = ?',
+      [user.userId, oldBookUrl]
+    );
+    if (!oldShelf) {
+      await getActiveCategories();
+      const detectedCategory = autoDetectCategory({
+        kind: newBook.kind,
+        name: newBook.name,
+        intro: newBook.intro,
+      });
+      await query(`
+        INSERT INTO books (book_url, name, author, cover_url, intro, origin, origin_name, type, kind)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+        ON DUPLICATE KEY UPDATE
+          name = VALUES(name),
+          author = VALUES(author),
+          cover_url = VALUES(cover_url),
+          intro = VALUES(intro),
+          origin = VALUES(origin),
+          origin_name = VALUES(origin_name),
+          kind = VALUES(kind)
+      `, [
+        newBook.bookUrl,
+        newBook.name || '',
+        newBook.author || '',
+        newBook.coverUrl || '',
+        newBook.intro || '',
+        newBook.sourceUrl || newBook.origin || '',
+        newBook.sourceName || newBook.originName || '',
+        newBook.kind || '',
+      ]);
+      await persistVerifiedSwitchData(newBook.bookUrl, verifiedTarget);
+      res.json({ code: 0, msg: '换源成功', data: { bookUrl: newBook.bookUrl, shelfUpdated: false } });
+      return;
+    }
+
+    await transaction(async (conn) => {
+      await getActiveCategories();
+      const detectedCategory = autoDetectCategory({
+        kind: newBook.kind,
+        name: newBook.name,
+        intro: newBook.intro,
+      });
+      await conn.execute(`
+        INSERT INTO books (book_url, name, author, cover_url, intro, origin, origin_name, type, kind)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+        ON DUPLICATE KEY UPDATE
+          name = VALUES(name),
+          author = VALUES(author),
+          cover_url = VALUES(cover_url),
+          intro = VALUES(intro),
+          origin = VALUES(origin),
+          origin_name = VALUES(origin_name),
+          kind = VALUES(kind)
+      `, [
+        newBook.bookUrl,
+        newBook.name || '',
+        newBook.author || '',
+        newBook.coverUrl || '',
+        newBook.intro || '',
+        newBook.sourceUrl || newBook.origin || '',
+        newBook.sourceName || newBook.originName || '',
+        newBook.kind || '',
+      ]);
+
+      const existingNewShelf: any = await conn.execute(
+        'SELECT id FROM user_books WHERE user_id = ? AND book_url = ?',
+        [user.userId, newBook.bookUrl]
+      );
+      const rows = existingNewShelf[0] as any[];
+
+      if (rows.length > 0 && oldBookUrl !== newBook.bookUrl) {
+        await conn.execute(
+          `UPDATE user_books
+           SET dur_chapter_index = ?, dur_chapter_pos = ?, dur_chapter_title = ?, dur_chapter_time = NOW()
+           WHERE user_id = ? AND book_url = ?`,
+          [
+            oldShelf.dur_chapter_index || 0,
+            oldShelf.dur_chapter_pos || 0,
+            oldShelf.dur_chapter_title || '',
+            user.userId,
+            newBook.bookUrl,
+          ]
+        );
+        await conn.execute('DELETE FROM user_books WHERE user_id = ? AND book_url = ?', [user.userId, oldBookUrl]);
+      } else {
+        await conn.execute(
+          `UPDATE user_books
+           SET book_url = ?, dur_chapter_time = NOW()
+           WHERE user_id = ? AND book_url = ?`,
+          [newBook.bookUrl, user.userId, oldBookUrl]
+        );
+      }
+    });
+
+    await persistVerifiedSwitchData(newBook.bookUrl, verifiedTarget);
+    res.json({ code: 0, msg: '换源成功', data: { bookUrl: newBook.bookUrl } });
+  } catch (err: any) {
+    sendError(res, err, '换源失败');
+    return;
+  }
+}
+
+// ========== 章节级换源 ==========
+
+import { switchChapterSource, findChapterAlternatives } from '../../services/chapterSwitchService';
+
+/**
+ * 章节级换源 — 仅替换单章内容，不更换整本书的书源
+ * POST /api/book/chapter-switch
+ */
+export async function switchChapter(req: Request, res: Response): Promise<void> {
+  try {
+    const { bookName, bookAuthor, chapterTitle, chapterIndex, targetSourceId } = req.body;
+
+    if (!bookName || !chapterTitle) {
+      res.json({ code: 400, msg: '缺少必要参数：bookName, chapterTitle' });
+      return;
+    }
+
+    // 获取目标书源
+    const targetSource = await queryOne('SELECT * FROM book_sources WHERE id = ? AND enabled = 1', [
+      targetSourceId,
+    ]);
+    if (!targetSource) {
+      res.json({ code: 404, msg: '目标书源不存在或未启用' });
+      return;
+    }
+
+    const result = await switchChapterSource(
+      null,
+      targetSource,
+      bookName,
+      bookAuthor || '',
+      chapterTitle,
+      chapterIndex || 0
+    );
+
+    if (result.success) {
+      res.json({ code: 0, data: result });
+    } else {
+      res.json({ code: 500, msg: result.error || '章节换源失败' });
+    }
+  } catch (err: any) {
+    sendError(res, err, '章节换源失败');
+  }
+}
+
+/**
+ * 批量查找章节替代来源（流式推送）
+ * POST /api/book/chapter-alternatives-stream
+ */
+export async function streamChapterAlternatives(req: Request, res: Response): Promise<void> {
+  const { bookName, bookAuthor, chapterTitle, chapterIndex } = req.body;
+
+  if (!bookName || !chapterTitle) {
+    res.json({ code: 400, msg: '缺少必要参数：bookName, chapterTitle' });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  const sendEvent = (event: string, data: any) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    // 获取所有启用的书源
+    const sources = await query(
+      'SELECT * FROM book_sources WHERE enabled = 1 AND search_url IS NOT NULL AND search_url != \'\' ORDER BY weight DESC, custom_order ASC'
+    );
+
+    sendEvent('total', { total: sources.length });
+
+    let found = 0;
+
+    // 并发搜索，找到即推送（无上限，搜索所有启用书源）
+    let idx = 0;
+    const concurrency = 5;
+
+    async function next(): Promise<void> {
+      while (idx < sources.length) {
+        const i = idx++;
+        const source = sources[i];
+        try {
+          const result = await switchChapterSource(
+            null,
+            source,
+            bookName,
+            bookAuthor || '',
+            chapterTitle,
+            chapterIndex || 0
+          );
+          if (result.success) {
+            found++;
+            sendEvent('result', result);
+          }
+        } catch (e: any) {
+          // 忽略单个书源的失败
+        }
+        sendEvent('progress', { current: i + 1, total: sources.length, found });
+      }
+    }
+
+    const workers = Array.from(
+      { length: Math.min(concurrency, sources.length) },
+      () => next()
+    );
+    await Promise.all(workers);
+
+    sendEvent('done', { total: sources.length, found });
+    res.end();
+  } catch (err: any) {
+    sendEvent('error', { msg: err.message });
+    res.end();
+  }
+}
+
+// 刷新目录

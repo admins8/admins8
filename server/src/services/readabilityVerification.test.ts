@@ -56,4 +56,12 @@ test('换源候选只验证目录，不在换源列表阶段请求正文', async
     source: {},
     book: { bookUrl: 'https://a.test/book' },
     chapterIndex: 0,
-    timeoutMs: 10
+    timeoutMs: 100,
+  });
+
+  assert.equal(result.readable, true);
+  assert.equal(result.tocVerified, true);
+  assert.equal(result.contentVerified, false);
+  assert.equal(result.chapter?.index, 0);
+  assert.equal(contentCalls, 0);
+});
